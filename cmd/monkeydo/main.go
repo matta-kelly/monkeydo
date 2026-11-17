@@ -1,7 +1,7 @@
 // monkeydo keeps a node true to git: each tick it compares a dazoo checkout with the node, changes what differs, and
 // puts back a change that fails its health check.
 //
-//	monkeydo run --checkout DIR --node mutable/<name> [--lanes files,packages,accounts,secrets] [--root /] [--state /var/lib/monkeydo]
+//	monkeydo run --checkout DIR --node mutable/<name> [--lanes files,packages,accounts,secrets,containers] [--root /] [--state /var/lib/monkeydo]
 //	monkeydo check --checkout DIR --node mutable/<name>
 //	monkeydo version
 //
@@ -21,6 +21,7 @@ import (
 
 	"github.com/matta-kelly/monkeydo/engine"
 	"github.com/matta-kelly/monkeydo/lanes/accounts"
+	"github.com/matta-kelly/monkeydo/lanes/containers"
 	"github.com/matta-kelly/monkeydo/lanes/files"
 	"github.com/matta-kelly/monkeydo/lanes/packages"
 	"github.com/matta-kelly/monkeydo/lanes/secrets"
@@ -53,7 +54,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	nodeDir := fl.String("node", "", "this node's folder under nodes/, e.g. mutable/monkeybusiness")
 	root := fl.String("root", "/", "the folder that stands for /")
 	state := fl.String("state", "/var/lib/monkeydo", "where monkeydo keeps its record")
-	laneList := fl.String("lanes", "files", "the lanes to run, in this order: files, packages, accounts, secrets")
+	laneList := fl.String("lanes", "files", "the lanes to run, in this order: files, packages, accounts, secrets, containers")
 	if err := fl.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -79,6 +80,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		report("packages", len(pkgs), err)
 		accts, err := accounts.Read(src)
 		report("accounts", len(accts), err)
+		quads, err := containers.Render(src)
+		report("containers", len(quads), err)
 		if bad {
 			return 1
 		}
@@ -87,12 +90,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	n := node.Real{Root: *root}
 	known := map[string]engine.Lane{"files": files.Lane{Node: n}, "packages": packages.Lane{Node: n}, "accounts": accounts.Lane{Node: n},
-		"secrets": secrets.Lane{Node: n, Window: units.Default}}
+		"secrets": secrets.Lane{Node: n, Window: units.Default}, "containers": containers.Lane{Node: n, Window: units.Default}}
 	var lanes []engine.Lane
 	for _, name := range strings.Split(*laneList, ",") {
 		lane, ok := known[strings.TrimSpace(name)]
 		if !ok {
-			fmt.Fprintf(stderr, "monkeydo: no lane %q: files, packages, accounts or secrets\n", name)
+			fmt.Fprintf(stderr, "monkeydo: no lane %q: files, packages, accounts, secrets or containers\n", name)
 			return 2
 		}
 		lanes = append(lanes, lane)
