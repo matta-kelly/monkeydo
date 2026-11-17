@@ -50,6 +50,20 @@ func TestRunWritesTheNodesFilesAndASecondRunDoesNothing(t *testing.T) {
 	}
 }
 
+func quadletIn(t *testing.T, checkout string) {
+	t.Helper()
+	p := filepath.Join(checkout, "nodes", "mutable", "n", "web.container")
+	os.WriteFile(p, []byte("[Container]\nImage=x\n"), 0o644)
+}
+
+func TestCheckRefusesANodeThatRendersNoUnit(t *testing.T) {
+	checkout, _, _ := setup(t, "dazoo/x.conf")
+	code, out := call("check", "--checkout", checkout, "--node", "mutable/n")
+	if code != 1 || !strings.Contains(out, "renders no unit file") {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+}
+
 func TestCheckRefusesAFileMonkeydoMayNotOwn(t *testing.T) {
 	checkout, _, _ := setup(t, "crate/machine.toml")
 	code, out := call("check", "--checkout", checkout, "--node", "mutable/n")
@@ -57,6 +71,7 @@ func TestCheckRefusesAFileMonkeydoMayNotOwn(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, out)
 	}
 	checkout, _, _ = setup(t, "dazoo/x.conf")
+	quadletIn(t, checkout)
 	if code, out := call("check", "--checkout", checkout, "--node", "mutable/n"); code != 0 {
 		t.Fatalf("a good tree: exit %d: %s", code, out)
 	}

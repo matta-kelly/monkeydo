@@ -87,6 +87,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 				name += "@" + a
 			}
 			quads, err := containers.Render(src, a)
+			if err == nil && len(quads) == 0 {
+				err = fmt.Errorf("renders no unit file, which the lane refuses: applying it would remove every unit")
+			}
 			if err == nil && *quadlet != "" {
 				gen, aerr := filepath.Abs(*quadlet)
 				if aerr != nil {
