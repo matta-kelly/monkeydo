@@ -179,11 +179,12 @@ func (c *change) Fix(ctx context.Context) (engine.Undo, error) {
 // and watches each settle.
 func (c *change) Healthy(ctx context.Context) error {
 	for _, u := range c.l.consumers(c.name) {
-		base, err := units.Restart(ctx, c.l.Node, u)
+		ctl := units.System(c.l.Node)
+		base, err := units.Restart(ctx, ctl, u)
 		if err != nil {
 			return err
 		}
-		if err := units.Settle(ctx, c.l.Node, u, base, c.l.Window); err != nil {
+		if err := units.Settle(ctx, ctl, u, base, c.l.Window); err != nil {
 			return err
 		}
 	}

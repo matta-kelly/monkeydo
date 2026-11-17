@@ -80,8 +80,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		report("packages", len(pkgs), err)
 		accts, err := accounts.Read(src)
 		report("accounts", len(accts), err)
-		quads, err := containers.Render(src)
+		quads, err := containers.Render(src, "")
 		report("containers", len(quads), err)
+		for _, a := range containers.Accounts(src) {
+			quads, err := containers.Render(src, a)
+			report("containers@"+a, len(quads), err)
+		}
 		if bad {
 			return 1
 		}
@@ -93,7 +97,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		"secrets": secrets.Lane{Node: n, Window: units.Default}, "containers": containers.Lane{Node: n, Window: units.Default}}
 	var lanes []engine.Lane
 	for _, name := range strings.Split(*laneList, ",") {
-		lane, ok := known[strings.TrimSpace(name)]
+		name = strings.TrimSpace(name)
+		if name == "containers" {
+			// the system's Quadlets, then each account's, each its own lane
+			lanes = append(lanes, known[name])
+			for _, a := range containers.Accounts(src) {
+				lanes = append(lanes, containers.Lane{Node: n, Window: units.Default, Account: a})
+			}
+			continue
+		}
+		lane, ok := known[name]
 		if !ok {
 			fmt.Fprintf(stderr, "monkeydo: no lane %q: files, packages, accounts, secrets or containers\n", name)
 			return 2

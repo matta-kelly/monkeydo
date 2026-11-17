@@ -29,11 +29,13 @@ run.
   node's age key and be no wrong seal, or the lane changes nothing. It delivers the ciphertext, loads the value as the
   podman secret `<name>` (on stdin, never in an argument or a log), and restarts every container that claims it; one
   that does not settle puts the secret back for all its consumers. A secret that leaves git is left in place
-- `lanes/containers/`: the node's system Quadlets, from `nodes/<node>/` (not `users/`), with `$DOMAIN` from its
-  `vars.env`, into `/etc/containers/systemd`, which it owns whole. The render is proved first: no placeholder left,
+- `lanes/containers/`: the node's Quadlets, with `$DOMAIN` from its `vars.env`: the system's, from `nodes/<node>/`
+  (not `users/`), into `/etc/containers/systemd`; and each account's, from `nodes/<node>/users/<account>/`, into the
+  account's `~/.config/containers/systemd`, run by its own systemd, every read and write there done as the account
+  (`runuser`). It owns each folder whole. The render is proved first: no placeholder left,
   something rendered, and Podman's generator accepts it (`--dryrun`). A file that left git has its unit stopped before
   it goes; each file that moved is written, systemd reloads, and its unit restarts and must settle, or it is put back
-  alone. Networks and volumes go before containers, and a container never started since boot is started
+  alone. Builds go first, then the containers that use a build that changed, then the rest; a container never started since boot is started
 - `units/`: restart a unit and watch it settle: active at the end, never failed, no restart of its own on the way
 - `node/`: the only code that touches the machine: files under a root, and commands
 - `cmd/monkeydo/`: the command
@@ -44,5 +46,5 @@ run.
 - `just release <major.minor.patch>`: checks, builds, tags, puts `monkeydo-linux-amd64.tar.gz` on the release, and
   prints the `VERSION` and `SHA256` that dazoo pins
 
-Not built: the crate lane; each account's own Quadlets; the `apply` and `secrets` commands for
+Not built: the crate lane; the `apply` and `secrets` commands for
 immutable images.

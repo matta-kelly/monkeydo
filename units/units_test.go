@@ -44,12 +44,12 @@ func (u *unit) do(line string, _ []byte) (string, error, bool) {
 }
 
 func settle(u *unit) error {
-	n := &node.Fake{Do: u.do}
-	base, err := Restart(context.Background(), n, "web.service")
+	ctl := System(&node.Fake{Do: u.do})
+	base, err := Restart(context.Background(), ctl, "web.service")
 	if err != nil {
 		return err
 	}
-	return Settle(context.Background(), n, "web.service", base, Window{For: 3, Step: 1})
+	return Settle(context.Background(), ctl, "web.service", base, Window{For: 3, Step: 1})
 }
 
 func TestAUnitThatStaysUpIsHealthy(t *testing.T) {
@@ -76,5 +76,20 @@ func TestAUnitThatRestartedItselfWhileItSettledIsUnhealthy(t *testing.T) {
 	err := settle(&unit{active: true, restarts: []string{"0", "2"}})
 	if err == nil || !strings.Contains(err.Error(), "restarted by itself") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestAnAccountsSystemctlGoesToItsOwnManager(t *testing.T) {
+	n := &node.Fake{}
+	Account(n, "assembly")(context.Background(), "restart", "factory.service")
+	if got := n.Calls(); len(got) != 1 || got[0] != "systemctl --user -M assembly@ restart factory.service" {
+		t.Fatalf("calls = %v", got)
+	}
+}
+
+func TestABuildThatFinishedIsHealthy(t *testing.T) {
+	ctl := System(&node.Fake{Do: (&unit{active: false, restarts: []string{"0"}}).do})
+	if err := Settle(context.Background(), ctl, "assembly-build.service", "0", Window{For: 2, Step: 1}); err != nil {
+		t.Fatal(err)
 	}
 }

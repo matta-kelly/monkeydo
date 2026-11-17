@@ -113,3 +113,14 @@ func TestCheckRefusesABadPackageOrAccountList(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckRendersEachAccountsQuadlets(t *testing.T) {
+	checkout, _, _ := setup(t, "dazoo/x.conf")
+	p := filepath.Join(checkout, "nodes", "mutable", "n", "users", "assembly", "a.container")
+	os.MkdirAll(filepath.Dir(p), 0o755)
+	os.WriteFile(p, []byte("[Container]\nEnvironment=K=${NOPE}\n"), 0o644)
+	code, out := call("check", "--checkout", checkout, "--node", "mutable/n")
+	if code != 1 || !strings.Contains(out, "containers@assembly:") {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+}

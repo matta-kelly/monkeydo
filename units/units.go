@@ -21,16 +21,32 @@ type Window struct {
 // Default is the window the bash loop used: ten looks, a second apart.
 var Default = Window{For: 10 * time.Second, Step: time.Second}
 
-// Restart restarts unit, and returns its restart count right after, the base Settle compares with.
-func Restart(ctx context.Context, n node.Node, unit string) (string, error) {
-	if _, err := n.Run(ctx, "systemctl", "restart", unit); err != nil {
-		return "", err
-	}
-	return restarts(ctx, n, unit)
+// Ctl runs systemctl in one scope: the system's, or an account's (systemctl --user -M <account>@).
+type Ctl func(ctx context.Context, args ...string) (string, error)
+
+// System is the system's systemctl on a node.
+func System(n node.Node) Ctl {
+	return func(ctx context.Context, args ...string) (string, error) { return n.Run(ctx, "systemctl", args...) }
 }
 
-// Settle watches unit for the window: healthy if it never fails, ends active, and its restart count stays at base.
-func Settle(ctx context.Context, n node.Node, unit, base string, w Window) error {
+// Account is an account's own systemd on a node, reached from root without a login.
+func Account(n node.Node, account string) Ctl {
+	return func(ctx context.Context, args ...string) (string, error) {
+		return n.Run(ctx, "systemctl", append([]string{"--user", "-M", account + "@"}, args...)...)
+	}
+}
+
+// Restart restarts unit, and returns its restart count right after, the base Settle compares with.
+func Restart(ctx context.Context, ctl Ctl, unit string) (string, error) {
+	if _, err := ctl(ctx, "restart", unit); err != nil {
+		return "", err
+	}
+	return restarts(ctx, ctl, unit)
+}
+
+// Settle watches unit for the window: healthy if it never fails, ends active, and its restart count stays at base. A
+// build (<name>-build.service) is a oneshot: done is healthy, so it is only watched for failing.
+func Settle(ctx context.Context, ctl Ctl, unit, base string, w Window) error {
 	for waited := time.Duration(0); waited < w.For; waited += w.Step {
 		if w.Step > 0 {
 			select {
@@ -39,14 +55,17 @@ func Settle(ctx context.Context, n node.Node, unit, base string, w Window) error
 			case <-time.After(w.Step):
 			}
 		}
-		if _, err := n.Run(ctx, "systemctl", "is-failed", "--quiet", unit); err == nil {
+		if _, err := ctl(ctx, "is-failed", "--quiet", unit); err == nil {
 			return fmt.Errorf("%s failed", unit)
 		}
 	}
-	if _, err := n.Run(ctx, "systemctl", "is-active", "--quiet", unit); err != nil {
+	if strings.HasSuffix(unit, "-build.service") {
+		return nil
+	}
+	if _, err := ctl(ctx, "is-active", "--quiet", unit); err != nil {
 		return fmt.Errorf("%s is not active", unit)
 	}
-	now, err := restarts(ctx, n, unit)
+	now, err := restarts(ctx, ctl, unit)
 	if err != nil {
 		return err
 	}
@@ -56,7 +75,7 @@ func Settle(ctx context.Context, n node.Node, unit, base string, w Window) error
 	return nil
 }
 
-func restarts(ctx context.Context, n node.Node, unit string) (string, error) {
-	out, err := n.Run(ctx, "systemctl", "show", "-p", "NRestarts", "--value", unit)
+func restarts(ctx context.Context, ctl Ctl, unit string) (string, error) {
+	out, err := ctl(ctx, "show", "-p", "NRestarts", "--value", unit)
 	return strings.TrimSpace(out), err
 }
