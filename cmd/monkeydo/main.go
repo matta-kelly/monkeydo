@@ -1,7 +1,7 @@
 // monkeydo keeps a node true to git: each tick it compares a dazoo checkout with the node, changes what differs, and
 // puts back a change that fails its health check.
 //
-//	monkeydo run --checkout DIR --node mutable/<name> [--root /] [--state /var/lib/monkeydo]
+//	monkeydo run --checkout DIR --node mutable/<name> [--lanes files,packages,accounts] [--root /] [--state /var/lib/monkeydo]
 //	monkeydo check --checkout DIR --node mutable/<name>
 //	monkeydo version
 //
@@ -16,10 +16,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/matta-kelly/monkeydo/engine"
+	"github.com/matta-kelly/monkeydo/lanes/accounts"
 	"github.com/matta-kelly/monkeydo/lanes/files"
+	"github.com/matta-kelly/monkeydo/lanes/packages"
 	"github.com/matta-kelly/monkeydo/node"
 )
 
@@ -48,6 +51,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	nodeDir := fl.String("node", "", "this node's folder under nodes/, e.g. mutable/monkeybusiness")
 	root := fl.String("root", "/", "the folder that stands for /")
 	state := fl.String("state", "/var/lib/monkeydo", "where monkeydo keeps its record")
+	laneList := fl.String("lanes", "files", "the lanes to run, in this order: files, packages, accounts")
 	if err := fl.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -58,13 +62,37 @@ func run(args []string, stdout, stderr io.Writer) int {
 	src := engine.Source{Checkout: *checkout, Node: *nodeDir}
 
 	if args[0] == "check" {
+		bad := false
+		report := func(lane string, n int, err error) {
+			if err != nil {
+				fmt.Fprintf(stderr, "monkeydo: check %s: %s: %v\n", *nodeDir, lane, err)
+				bad = true
+				return
+			}
+			fmt.Fprintf(stdout, "monkeydo: check %s: %s: %d ok\n", *nodeDir, lane, n)
+		}
 		n, err := files.Check(src)
-		if err != nil {
-			fmt.Fprintf(stderr, "monkeydo: check %s: files: %v\n", *nodeDir, err)
+		report("files", n, err)
+		pkgs, err := packages.Read(src)
+		report("packages", len(pkgs), err)
+		accts, err := accounts.Read(src)
+		report("accounts", len(accts), err)
+		if bad {
 			return 1
 		}
-		fmt.Fprintf(stdout, "monkeydo: check %s: files: %d ok\n", *nodeDir, n)
 		return 0
+	}
+
+	n := node.Real{Root: *root}
+	known := map[string]engine.Lane{"files": files.Lane{Node: n}, "packages": packages.Lane{Node: n}, "accounts": accounts.Lane{Node: n}}
+	var lanes []engine.Lane
+	for _, name := range strings.Split(*laneList, ",") {
+		lane, ok := known[strings.TrimSpace(name)]
+		if !ok {
+			fmt.Fprintf(stderr, "monkeydo: no lane %q: files, packages or accounts\n", name)
+			return 2
+		}
+		lanes = append(lanes, lane)
 	}
 
 	// One tick at a time: a second run waits for none, it stops.
@@ -87,8 +115,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "monkeydo: the record: %v\n", err)
 		return 2
 	}
-	n := node.Real{Root: *root}
-	res := engine.Run(context.Background(), src, []engine.Lane{files.Lane{Node: n}}, rec, stdout)
+	res := engine.Run(context.Background(), src, lanes, rec, stdout)
 	if err := rec.Save(); err != nil {
 		fmt.Fprintf(stderr, "monkeydo: the record: %v\n", err)
 		return 2

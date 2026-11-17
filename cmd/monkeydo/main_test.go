@@ -92,3 +92,24 @@ func TestUsage(t *testing.T) {
 		t.Fatalf("version: exit %d, %q", code, out)
 	}
 }
+
+func TestAnUnknownLaneIsUsage(t *testing.T) {
+	checkout, root, state := setup(t, "dazoo/x.conf")
+	code, out := call("run", "--checkout", checkout, "--node", "mutable/n", "--root", root, "--state", state, "--lanes", "files,bogus")
+	if code != 2 || !strings.Contains(out, `no lane "bogus"`) {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+}
+
+func TestCheckRefusesABadPackageOrAccountList(t *testing.T) {
+	for file, line := range map[string]string{"packages": "rm -rf /", "accounts": "root"} {
+		checkout, _, _ := setup(t, "dazoo/x.conf")
+		if err := os.WriteFile(filepath.Join(checkout, "nodes", "mutable", "n", file), []byte(line+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		code, out := call("check", "--checkout", checkout, "--node", "mutable/n")
+		if code != 1 || !strings.Contains(out, file+":") {
+			t.Fatalf("%s: exit %d: %s", file, code, out)
+		}
+	}
+}

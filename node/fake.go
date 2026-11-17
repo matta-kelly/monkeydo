@@ -14,6 +14,9 @@ type Fake struct {
 	// Answers maps a command line ("sysctl -n vm.dirty_bytes") to its output; a line in Fails fails with that text.
 	Answers map[string]string
 	Fails   map[string]string
+	// Do, when set, answers a command first: handled false hands it on to Fails and Answers. A test uses it for a
+	// machine whose answers change, such as dpkg after an install.
+	Do func(line string) (out string, err error, handled bool)
 
 	mu    sync.Mutex
 	calls []string
@@ -26,6 +29,11 @@ func (f *Fake) Run(_ context.Context, name string, args ...string) (string, erro
 	f.mu.Lock()
 	f.calls = append(f.calls, line)
 	f.mu.Unlock()
+	if f.Do != nil {
+		if out, err, ok := f.Do(line); ok {
+			return out, err
+		}
+	}
 	if msg, ok := f.Fails[line]; ok {
 		return msg, fmt.Errorf("%s: %s", line, msg)
 	}
