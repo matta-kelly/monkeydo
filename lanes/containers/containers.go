@@ -268,13 +268,7 @@ func (l Lane) validate(ctx context.Context, want map[string][]byte) error {
 	}
 	out, err := l.Node.RunCmd(ctx, node.Cmd{Name: l.Node.Path(gen), Args: args, Env: []string{"QUADLET_UNIT_DIRS=" + stage}})
 	if err != nil {
-		var reasons []string
-		for _, line := range strings.Split(out, "\n") {
-			if line != "" && !strings.Contains(line, "Loading source unit file") {
-				reasons = append(reasons, line)
-			}
-		}
-		return fmt.Errorf("quadlet refused the render: %s", strings.Join(reasons, "; "))
+		return fmt.Errorf("quadlet refused the render: %s", reasons(out))
 	}
 	return nil
 }
@@ -390,3 +384,22 @@ func (s *start) Fix(ctx context.Context) (engine.Undo, error) {
 	return func(context.Context) error { return nil }, err
 }
 func (s *start) Healthy(context.Context) error { return nil }
+
+// reasons are the generator's own error lines: not the units it printed, the files it loaded, or its warnings.
+func reasons(out string) string {
+	var lines []string
+	for _, line := range strings.Split(out, "\n") {
+		_, msg, ok := strings.Cut(line, "]: ")
+		if !strings.HasPrefix(line, "quadlet-generator[") || !ok {
+			continue
+		}
+		if strings.HasPrefix(msg, "Loading source unit file") || strings.HasPrefix(msg, "Warning:") {
+			continue
+		}
+		lines = append(lines, msg)
+	}
+	if len(lines) == 0 {
+		return strings.TrimSpace(out)
+	}
+	return strings.Join(lines, "; ")
+}

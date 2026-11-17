@@ -275,3 +275,12 @@ func contains(xs []string, x string) bool {
 	}
 	return false
 }
+
+func TestAGeneratorRefusalNamesOnlyItsReason(t *testing.T) {
+	out := "---web.service---\n[Unit]\nDescription=x\nquadlet-generator[1]: Loading source unit file /units/t.container\n" +
+		"quadlet-generator[1]: Warning: t.container specifies the image \"x\" which not a fully qualified image name.\n" +
+		"quadlet-generator[1]: converting \"t.container\": unsupported key 'BogusKey' in group 'Container' in /units/t.container\n"
+	if got := reasons(out); got != `converting "t.container": unsupported key 'BogusKey' in group 'Container' in /units/t.container` {
+		t.Fatalf("reasons = %q", got)
+	}
+}
