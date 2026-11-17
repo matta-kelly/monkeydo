@@ -20,7 +20,21 @@ type Node interface {
 	// Run runs a command and returns its output, stdout and stderr together. A command that fails, or passes its time
 	// limit, is an error that names it and holds its output.
 	Run(ctx context.Context, name string, args ...string) (string, error)
+	// RunCmd runs c, with its stdin and environment. A secret goes in on stdin, never in an argument, and an error
+	// names the command, not its stdin.
+	RunCmd(ctx context.Context, c Cmd) (string, error)
 }
+
+// Cmd is a command with what Run does not give it: stdin, and environment added to the node's own.
+type Cmd struct {
+	Name  string
+	Args  []string
+	Env   []string // KEY=value, added to the environment
+	Stdin []byte
+	Quiet bool // its output is secret: an error does not hold it
+}
+
+func (c Cmd) line() string { return strings.Join(append([]string{c.Name}, c.Args...), " ") }
 
 // Real is the machine this runs on. Root is "/" on a node, or a folder that stands for it.
 type Real struct {
@@ -31,6 +45,10 @@ type Real struct {
 func (r Real) Path(p string) string { return filepath.Join(r.Root, p) }
 
 func (r Real) Run(ctx context.Context, name string, args ...string) (string, error) {
+	return r.RunCmd(ctx, Cmd{Name: name, Args: args})
+}
+
+func (r Real) RunCmd(ctx context.Context, c Cmd) (string, error) {
 	limit := r.Limit
 	if limit == 0 {
 		limit = 60 * time.Second
@@ -38,15 +56,24 @@ func (r Real) Run(ctx context.Context, name string, args ...string) (string, err
 	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	var out bytes.Buffer
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, c.Name, c.Args...)
 	cmd.Stdout, cmd.Stderr = &out, &out
+	if len(c.Env) > 0 {
+		cmd.Env = append(os.Environ(), c.Env...)
+	}
+	if c.Stdin != nil {
+		cmd.Stdin = bytes.NewReader(c.Stdin)
+	}
 	err := cmd.Run()
 	text := strings.TrimSpace(out.String())
 	if ctx.Err() == context.DeadlineExceeded {
-		return text, fmt.Errorf("%s passed its limit of %s", strings.Join(append([]string{name}, args...), " "), limit)
+		return text, fmt.Errorf("%s passed its limit of %s", c.line(), limit)
 	}
 	if err != nil {
-		return text, fmt.Errorf("%s: %v: %s", strings.Join(append([]string{name}, args...), " "), err, text)
+		if c.Quiet {
+			return text, fmt.Errorf("%s: %v", c.line(), err)
+		}
+		return text, fmt.Errorf("%s: %v: %s", c.line(), err, text)
 	}
 	return text, nil
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"strings"
 	"sync"
 )
 
@@ -16,7 +15,7 @@ type Fake struct {
 	Fails   map[string]string
 	// Do, when set, answers a command first: handled false hands it on to Fails and Answers. A test uses it for a
 	// machine whose answers change, such as dpkg after an install.
-	Do func(line string) (out string, err error, handled bool)
+	Do func(line string, stdin []byte) (out string, err error, handled bool)
 
 	mu    sync.Mutex
 	calls []string
@@ -24,13 +23,18 @@ type Fake struct {
 
 func (f *Fake) Path(p string) string { return filepath.Join(f.Root, p) }
 
-func (f *Fake) Run(_ context.Context, name string, args ...string) (string, error) {
-	line := strings.Join(append([]string{name}, args...), " ")
+func (f *Fake) Run(ctx context.Context, name string, args ...string) (string, error) {
+	return f.RunCmd(ctx, Cmd{Name: name, Args: args})
+}
+
+// RunCmd writes the command line down, never its stdin.
+func (f *Fake) RunCmd(_ context.Context, c Cmd) (string, error) {
+	line := c.line()
 	f.mu.Lock()
 	f.calls = append(f.calls, line)
 	f.mu.Unlock()
 	if f.Do != nil {
-		if out, err, ok := f.Do(line); ok {
+		if out, err, ok := f.Do(line, c.Stdin); ok {
 			return out, err
 		}
 	}

@@ -21,7 +21,7 @@ type apt struct {
 	missing   map[string]bool // apt-get install fails: no such package
 }
 
-func (a *apt) do(line string) (string, error, bool) {
+func (a *apt) do(line string, _ []byte) (string, error, bool) {
 	f := strings.Fields(line)
 	switch {
 	case f[0] == "dpkg-query":

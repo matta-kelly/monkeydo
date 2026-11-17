@@ -4,7 +4,7 @@ monkeydo keeps a node true to git. Each tick it compares a dazoo checkout with t
 that each change took, and puts back the one that did not. Monkey see, monkey do: it does what git says.
 
 ```
-monkeydo run   --checkout DIR --node mutable/<name> [--lanes files,packages,accounts] [--root /] [--state /var/lib/monkeydo]
+monkeydo run   --checkout DIR --node mutable/<name> [--lanes files,packages,accounts,secrets] [--root /] [--state /var/lib/monkeydo]
 monkeydo check --checkout DIR --node mutable/<name>
 monkeydo version
 ```
@@ -25,6 +25,11 @@ run.
 - `lanes/accounts/`: the accounts a node's rootless apps run as, from `nodes/<node>/accounts`, one name a line. Each
   has a home, its own subuid and subgid range, and linger. An account that leaves git is no longer kept, and is left
   in place: its home holds an app's data
+- `lanes/secrets/`: the node's sealed secrets, from `nodes/<node>/secrets/sealed/<name>.sops`. Each must open with the
+  node's age key and be no wrong seal, or the lane changes nothing. It delivers the ciphertext, loads the value as the
+  podman secret `<name>` (on stdin, never in an argument or a log), and restarts every container that claims it; one
+  that does not settle puts the secret back for all its consumers. A secret that leaves git is left in place
+- `units/`: restart a unit and watch it settle: active at the end, never failed, no restart of its own on the way
 - `node/`: the only code that touches the machine: files under a root, and commands
 - `cmd/monkeydo/`: the command
 
@@ -34,5 +39,5 @@ run.
 - `just release <major.minor.patch>`: checks, builds, tags, puts `monkeydo-linux-amd64.tar.gz` on the release, and
   prints the `VERSION` and `SHA256` that dazoo pins
 
-Not built: the secrets, containers and crate lanes; the `apply` and `secrets` commands for
+Not built: the containers and crate lanes; the `apply` and `secrets` commands for
 immutable images.

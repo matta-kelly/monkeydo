@@ -36,7 +36,7 @@ func (h *host) appendRange(file, name string, start int) {
 	f.Close()
 }
 
-func (h *host) do(line string) (string, error, bool) {
+func (h *host) do(line string, _ []byte) (string, error, bool) {
 	f := strings.Fields(line)
 	switch {
 	case f[0] == "getent":
