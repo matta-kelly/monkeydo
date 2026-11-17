@@ -5,9 +5,12 @@ that each change took, and puts back the one that did not. Monkey see, monkey do
 
 ```
 monkeydo run   --checkout DIR --node mutable/<name> [--lanes files,packages,accounts,secrets,containers] [--root /] [--state /var/lib/monkeydo]
-monkeydo check --checkout DIR --node mutable/<name>
+monkeydo check --checkout DIR --node mutable/<name> [--quadlet GENERATOR]
 monkeydo version
 ```
+
+`check` proves a node's trees and lists with no node at all; with `--quadlet`, it also proves each render (the system's
+and each account's) with that generator, as the node does, so CI runs the same proof.
 
 Exit status: 0, the node is true to git; 1, a lane refused or a change failed, named in the log; 2, monkeydo could not
 run.

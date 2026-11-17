@@ -124,3 +124,27 @@ func TestCheckRendersEachAccountsQuadlets(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, out)
 	}
 }
+
+func TestCheckProvesEachRenderWithTheGeneratorItIsGiven(t *testing.T) {
+	checkout, _, _ := setup(t, "dazoo/x.conf")
+	for _, rel := range []string{"web.container", "users/assembly/a.container"} {
+		p := filepath.Join(checkout, "nodes", "mutable", "n", rel)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte("[Container]\nImage=x\n"), 0o644)
+	}
+	bin := t.TempDir()
+	// a generator that writes down its arguments, and refuses a user render
+	gen := filepath.Join(bin, "quadlet")
+	log := filepath.Join(bin, "calls")
+	os.WriteFile(gen, []byte("#!/bin/sh\necho \"$*\" >> "+log+"\n[ \"$1\" = -user ] && { echo 'a.container: unsupported key'; exit 1; }\nexit 0\n"), 0o755)
+
+	code, out := call("check", "--checkout", checkout, "--node", "mutable/n", "--quadlet", gen)
+
+	calls, _ := os.ReadFile(log)
+	if code != 1 || !strings.Contains(out, "containers: 1 ok") || !strings.Contains(out, "containers@assembly: quadlet refused") {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	if string(calls) != "--dryrun\n-user --dryrun\n" {
+		t.Fatalf("generator calls %q", calls)
+	}
+}

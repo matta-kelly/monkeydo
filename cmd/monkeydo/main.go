@@ -2,7 +2,7 @@
 // puts back a change that fails its health check.
 //
 //	monkeydo run --checkout DIR --node mutable/<name> [--lanes files,packages,accounts,secrets,containers] [--root /] [--state /var/lib/monkeydo]
-//	monkeydo check --checkout DIR --node mutable/<name>
+//	monkeydo check --checkout DIR --node mutable/<name> [--quadlet GENERATOR]
 //	monkeydo version
 //
 // Exit status: 0, the node is true to git; 1, a lane refused or a change failed (the log names it); 2, monkeydo itself
@@ -54,6 +54,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	nodeDir := fl.String("node", "", "this node's folder under nodes/, e.g. mutable/monkeybusiness")
 	root := fl.String("root", "/", "the folder that stands for /")
 	state := fl.String("state", "/var/lib/monkeydo", "where monkeydo keeps its record")
+	quadlet := fl.String("quadlet", "", "check: prove each render with this quadlet generator, as the node does")
 	laneList := fl.String("lanes", "files", "the lanes to run, in this order: files, packages, accounts, secrets, containers")
 	if err := fl.Parse(args[1:]); err != nil {
 		return 2
@@ -80,11 +81,21 @@ func run(args []string, stdout, stderr io.Writer) int {
 		report("packages", len(pkgs), err)
 		accts, err := accounts.Read(src)
 		report("accounts", len(accts), err)
-		quads, err := containers.Render(src, "")
-		report("containers", len(quads), err)
-		for _, a := range containers.Accounts(src) {
+		for _, a := range append([]string{""}, containers.Accounts(src)...) {
+			name := "containers"
+			if a != "" {
+				name += "@" + a
+			}
 			quads, err := containers.Render(src, a)
-			report("containers@"+a, len(quads), err)
+			if err == nil && *quadlet != "" {
+				gen, aerr := filepath.Abs(*quadlet)
+				if aerr != nil {
+					err = aerr
+				} else {
+					err = containers.Lane{Node: node.Real{Root: "/"}, Account: a, Quadlet: []string{gen}}.Validate(context.Background(), quads)
+				}
+			}
+			report(name, len(quads), err)
 		}
 		if bad {
 			return 1

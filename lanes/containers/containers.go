@@ -233,6 +233,12 @@ func uses(container []byte, moved map[string]bool) bool {
 	return false
 }
 
+// Validate proves a render with Podman's generator, as the lane does before it changes anything. CI runs it with the
+// generator of the node's Podman version.
+func (l Lane) Validate(ctx context.Context, want map[string][]byte) error {
+	return l.defaults().validate(ctx, want)
+}
+
 // validate runs Podman's generator over the render: it drops a file it cannot read with no error of its own, so its
 // --dryrun is the only proof a file makes a unit.
 func (l Lane) validate(ctx context.Context, want map[string][]byte) error {
