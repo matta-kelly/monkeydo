@@ -32,6 +32,7 @@ type Cmd struct {
 	Env   []string // KEY=value, added to the environment
 	Stdin []byte
 	Quiet bool // its output is secret: an error does not hold it
+	Raw   bool // its output is data, returned exactly: not trimmed
 }
 
 func (c Cmd) line() string { return strings.Join(append([]string{c.Name}, c.Args...), " ") }
@@ -65,7 +66,10 @@ func (r Real) RunCmd(ctx context.Context, c Cmd) (string, error) {
 		cmd.Stdin = bytes.NewReader(c.Stdin)
 	}
 	err := cmd.Run()
-	text := strings.TrimSpace(out.String())
+	text := out.String()
+	if !c.Raw {
+		text = strings.TrimSpace(text)
+	}
 	if ctx.Err() == context.DeadlineExceeded {
 		return text, fmt.Errorf("%s passed its limit of %s", c.line(), limit)
 	}

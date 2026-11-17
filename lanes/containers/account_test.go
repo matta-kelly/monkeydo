@@ -215,3 +215,15 @@ func TestAccountsAreTheFoldersUnderUsers(t *testing.T) {
 		t.Fatalf("accounts = %v", got)
 	}
 }
+
+func TestASecondTickOnAnAccountChangesNothing(t *testing.T) {
+	w := newAcctWorld(t)
+	w.git("users/assembly/assembly.container", factory)
+	w.git("users/assembly/assembly.build", build)
+	w.tick()
+	w.box.restarted = nil
+	res := w.tick()
+	if !res.OK() || len(w.box.restarted) != 0 || w.log.Len() != 0 {
+		t.Fatalf("ok %v, restarted %v, log:\n%s", res.OK(), w.box.restarted, w.log.String())
+	}
+}

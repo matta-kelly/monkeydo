@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -35,6 +36,10 @@ func (f *Fake) RunCmd(_ context.Context, c Cmd) (string, error) {
 	f.mu.Unlock()
 	if f.Do != nil {
 		if out, err, ok := f.Do(line, c.Stdin); ok {
+			// as Real does: output is trimmed unless the command asks for it raw
+			if !c.Raw {
+				out = strings.TrimSpace(out)
+			}
 			return out, err
 		}
 	}

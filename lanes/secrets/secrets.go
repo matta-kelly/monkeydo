@@ -92,8 +92,9 @@ func (l Lane) delivered(name string) string { return filepath.Join(l.Sealed, nam
 
 // open decrypts a sealed file with the node's age key. Its output is the value, so it is never put in an error.
 func (l Lane) open(ctx context.Context, path string) ([]byte, error) {
-	out, err := l.Node.RunCmd(ctx, node.Cmd{Name: "sops", Args: []string{"-d", path}, Env: []string{"SOPS_AGE_KEY_FILE=" + l.Node.Path(l.KeyFile)}, Quiet: true})
-	return []byte(out), err
+	out, err := l.Node.RunCmd(ctx, node.Cmd{Name: "sops", Args: []string{"-d", path}, Env: []string{"SOPS_AGE_KEY_FILE=" + l.Node.Path(l.KeyFile)}, Quiet: true, Raw: true})
+	// trailing newlines dropped, as the shell's $(sops -d) dropped them, so a value loads as it always has
+	return []byte(strings.TrimRight(out, "\n")), err
 }
 
 // load replaces the podman secret name with value: podman's secrets cannot be changed, only removed and made again.

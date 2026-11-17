@@ -110,7 +110,7 @@ func (a account) read(ctx context.Context, file string) ([]byte, bool, error) {
 	if _, err := a.as(ctx, nil, "test", "-f", a.path(file)); err != nil {
 		return nil, false, nil
 	}
-	out, err := a.as(ctx, nil, "cat", a.path(file))
+	out, err := a.n.RunCmd(ctx, node.Cmd{Name: "runuser", Args: []string{"-u", a.name, "--", "cat", a.path(file)}, Raw: true})
 	if err != nil {
 		return nil, false, err
 	}
