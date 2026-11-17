@@ -266,7 +266,7 @@ func (l Lane) validate(ctx context.Context, want map[string][]byte) error {
 	if l.Account != "" {
 		args = []string{"-user", "--dryrun"}
 	}
-	out, err := l.Node.RunCmd(ctx, node.Cmd{Name: l.Node.Path(gen), Args: args, Env: []string{"QUADLET_UNIT_DIRS=" + stage}})
+	out, err := l.Node.RunCmd(ctx, node.Cmd{Name: l.Node.Path(gen), Args: args, Env: []string{"QUADLET_UNIT_DIRS=" + stage}, StderrOnly: true})
 	if err != nil {
 		return fmt.Errorf("quadlet refused the render: %s", reasons(out))
 	}

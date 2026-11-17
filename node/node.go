@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,6 +34,9 @@ type Cmd struct {
 	Stdin []byte
 	Quiet bool // its output is secret: an error does not hold it
 	Raw   bool // its output is data, returned exactly: not trimmed
+	// StderrOnly drops stdout: a command that prints a lot there and its diagnostics on stderr would otherwise have the two
+	// spliced into one another
+	StderrOnly bool
 }
 
 func (c Cmd) line() string { return strings.Join(append([]string{c.Name}, c.Args...), " ") }
@@ -59,6 +63,9 @@ func (r Real) RunCmd(ctx context.Context, c Cmd) (string, error) {
 	var out bytes.Buffer
 	cmd := exec.CommandContext(ctx, c.Name, c.Args...)
 	cmd.Stdout, cmd.Stderr = &out, &out
+	if c.StderrOnly {
+		cmd.Stdout = io.Discard
+	}
 	if len(c.Env) > 0 {
 		cmd.Env = append(os.Environ(), c.Env...)
 	}
