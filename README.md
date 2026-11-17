@@ -1,53 +1,67 @@
 # monkeydo
 
-monkeydo keeps a node true to git. Each tick it compares a dazoo checkout with the node, changes what differs, checks
-that each change took, and puts back the one that did not. Monkey see, monkey do: it does what git says.
+monkeydo keeps a Linux host matching a git repository. It reads a node's declaration (its files, packages, accounts,
+secrets and Podman Quadlets), compares it with the host, and changes only what differs. Each change is checked after it
+is applied, and a change that fails its check is rolled back on its own.
+
+Monkey see, monkey do: it does what git says.
+
+## How it works
+
+A run goes through each **lane**, one per kind of thing a host has. For every difference between git and the host, the
+engine takes the same steps:
+
+1. **Prove**: check the change before touching the host (for example `sshd -t`, `quadlet --dryrun`, or decrypting a
+   secret).
+2. **Apply**: make the change atomically.
+3. **Bring live**: reload or restart what reads it.
+4. **Check health**: confirm it took, such as a sysctl value reading back or a unit staying active with no restarts.
+5. **Roll back**: if the check fails, restore that one change. The rest of the run is kept.
+
+A run with nothing to change does nothing. monkeydo keeps a record of what it owns, so a thing removed from git is
+removed from the host, and nothing it did not create is touched.
+
+## Lanes
+
+| Lane | Source in the repo | What it keeps |
+| --- | --- | --- |
+| `files` | `nodes/_shared/etc/`, `nodes/<node>/etc/` | Files under `/etc`, each with the reload its kind needs |
+| `packages` | `nodes/<node>/packages` | Debian packages. Only packages monkeydo installed are ever removed |
+| `accounts` | `nodes/<node>/accounts` | Users with a home, subuid and subgid ranges, and linger. Never deleted |
+| `secrets` | `nodes/<node>/secrets/sealed/*.sops` | SOPS-sealed values loaded as Podman secrets. Their containers restart on a change |
+| `containers` | `nodes/<node>/`, `nodes/<node>/users/<account>/` | Quadlets for the system and for each account, in its own systemd |
+
+Secret values are passed on stdin only, never in arguments or logs. In an account's home, monkeydo reads and writes only
+as that account.
+
+## Usage
 
 ```
-monkeydo run   --checkout DIR --node mutable/<name> [--lanes files,packages,accounts,secrets,containers] [--root /] [--state /var/lib/monkeydo]
+monkeydo run   --checkout DIR --node mutable/<name> [--lanes files,packages,accounts,secrets,containers]
 monkeydo check --checkout DIR --node mutable/<name> [--quadlet GENERATOR]
 monkeydo version
 ```
 
-`check` proves a node's trees and lists with no node at all; with `--quadlet`, it also proves each render (the system's
-and each account's) with that generator, as the node does, so CI runs the same proof.
+- `run` applies the lanes to the host. Use `--root` and `--state` to point it at another root and record folder.
+- `check` proves a declaration without a host, for CI. With `--quadlet`, it also validates every Quadlet render with
+  that generator.
 
-Exit status: 0, the node is true to git; 1, a lane refused or a change failed, named in the log; 2, monkeydo could not
-run.
+| Exit status | Meaning |
+| --- | --- |
+| 0 | The host matches git |
+| 1 | A lane refused its input, or a change failed and was rolled back. The log names it |
+| 2 | monkeydo could not run (usage, another run holding the lock, or the record) |
 
-## How it is made
+## Development
 
-- `engine/`: the loop. A lane names each difference between git and the node as a change; the engine takes each
-  change through fix, then health, and undoes the one that fails, alone. The record keeps what each lane owns, so a
-  thing that leaves git is removed and nothing monkeydo did not put there is touched
-- `lanes/files/`: the node's files under `/etc`, from `nodes/_shared/etc` and `nodes/<node>/etc`, the node's winning.
-  Each kind of file brings itself live: `sysctl.d` with `sysctl --system` and a read-back of each value,
-  `sshd_config.d` with `sshd -t` and a reload of ssh. Paths the box or another part of the node keeps are never owned
-- `lanes/packages/`: the node's Debian packages, from `nodes/<node>/packages`, one name a line. It installs what is
-  missing and owns only what it installed, so a package the node already had is never removed
-- `lanes/accounts/`: the accounts a node's rootless apps run as, from `nodes/<node>/accounts`, one name a line. Each
-  has a home, its own subuid and subgid range, and linger. An account that leaves git is no longer kept, and is left
-  in place: its home holds an app's data
-- `lanes/secrets/`: the node's sealed secrets, from `nodes/<node>/secrets/sealed/<name>.sops`. Each must open with the
-  node's age key and be no wrong seal, or the lane changes nothing. It delivers the ciphertext, loads the value as the
-  podman secret `<name>` (on stdin, never in an argument or a log), and restarts every container that claims it; one
-  that does not settle puts the secret back for all its consumers. A secret that leaves git is left in place
-- `lanes/containers/`: the node's Quadlets, with `$DOMAIN` from its `vars.env`: the system's, from `nodes/<node>/`
-  (not `users/`), into `/etc/containers/systemd`; and each account's, from `nodes/<node>/users/<account>/`, into the
-  account's `~/.config/containers/systemd`, run by its own systemd, every read and write there done as the account
-  (`runuser`). It owns each folder whole. The render is proved first: no placeholder left,
-  something rendered, and Podman's generator accepts it (`--dryrun`). A file that left git has its unit stopped before
-  it goes; each file that moved is written, systemd reloads, and its unit restarts and must settle, or it is put back
-  alone. Builds go first, then the containers that use a build that changed, then the rest; a container never started since boot is started
-- `units/`: restart a unit and watch it settle: active at the end, never failed, no restart of its own on the way
-- `node/`: the only code that touches the machine: files under a root, and commands
-- `cmd/monkeydo/`: the command
+```
+just check                  # gofmt, go vet, go test (CI runs the same; main requires it)
+just release <x.y.z>        # check, build, tag, publish monkeydo-linux-amd64.tar.gz, print VERSION and SHA256
+```
 
-## Build, check, release
+Code layout: `engine/` (the run and its record), `lanes/` (one package per lane), `units/` (restart and health checks
+for systemd units), `node/` (the only code that touches the host), `cmd/monkeydo/` (the command).
 
-- `just check`: gofmt, go vet, go test. CI runs the same, and main requires it
-- `just release <major.minor.patch>`: checks, builds, tags, puts `monkeydo-linux-amd64.tar.gz` on the release, and
-  prints the `VERSION` and `SHA256` that dazoo pins
+## Status
 
-Not built: the crate lane; the `apply` and `secrets` commands for
-immutable images.
+Not built yet: a lane for crate's machine setup, and commands for immutable images.
