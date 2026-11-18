@@ -3,14 +3,17 @@ package files
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/matta-kelly/monkeydo/engine"
 	"github.com/matta-kelly/monkeydo/node"
+	"github.com/matta-kelly/monkeydo/units"
 )
 
 const writeback = "vm.dirty_background_bytes = 268435456\nvm.dirty_bytes = 1073741824\n"
@@ -59,7 +62,7 @@ func (w *world) box(path, content string, mode os.FileMode) {
 
 func (w *world) tick() engine.Result {
 	w.log.Reset()
-	return engine.Run(context.Background(), engine.Source{Checkout: w.checkout, Node: "mutable/n"}, []engine.Lane{Lane{Node: w.node}}, w.rec, &w.log)
+	return engine.Run(context.Background(), engine.Source{Checkout: w.checkout, Node: "mutable/n"}, []engine.Lane{Lane{Node: w.node, Window: units.Window{For: 2 * time.Nanosecond, Step: time.Nanosecond}}}, w.rec, &w.log)
 }
 
 func (w *world) onBox(path string) (string, os.FileMode, bool) {
@@ -213,4 +216,94 @@ func TestAnExecutableFileIs0755AndModeDriftIsFixed(t *testing.T) {
 	if _, mode, _ := w.onBox("/etc/dazoo/a.conf"); mode != 0o644 {
 		t.Fatalf("a.conf mode %o, want the drift fixed", mode)
 	}
+}
+
+func TestANewUnitFileIsWrittenAndReloadedButNotStarted(t *testing.T) {
+	w := newWorld(t)
+	w.node.Fails["systemctl is-active --quiet crate-apply.timer"] = "inactive"
+	w.git("mutable/n", "systemd/system/crate-apply.timer", "[Timer]\nOnCalendar=*:0/5\n", 0o644)
+
+	res := w.tick()
+
+	want := []string{"systemctl daemon-reload", "systemctl is-active --quiet crate-apply.timer"}
+	if !res.OK() || !reflect.DeepEqual(w.node.Calls(), want) {
+		t.Fatalf("ok %v, calls %v; log:\n%s", res.OK(), w.node.Calls(), w.log.String())
+	}
+}
+
+func TestAChangedFileOfARunningUnitRestartsIt(t *testing.T) {
+	w := newWorld(t)
+	w.box("/etc/systemd/system/web.service.d/limits.conf", "[Service]\nMemoryMax=1G\n", 0o644)
+	w.git("mutable/n", "systemd/system/web.service.d/limits.conf", "[Service]\nMemoryMax=2G\n", 0o644)
+	w.node.Fails["systemctl is-failed --quiet web.service"] = "active"
+
+	res := w.tick()
+
+	if !res.OK() || !contains(w.node.Calls(), "systemctl restart web.service") {
+		t.Fatalf("ok %v, calls %v; log:\n%s", res.OK(), w.node.Calls(), w.log.String())
+	}
+}
+
+func TestAUnitThatFailsAfterItsChangeGetsItsOldFileBack(t *testing.T) {
+	w := newWorld(t)
+	old := "[Service]\nExecStart=/bin/true\n"
+	w.box("/etc/systemd/system/web.service", old, 0o644)
+	w.git("mutable/n", "systemd/system/web.service", "[Service]\nExecStart=/bin/false\n", 0o644)
+	// running before the change; failed while the new file is on the node
+	w.node.Do = func(line string, _ []byte) (string, error, bool) {
+		if line != "systemctl is-failed --quiet web.service" {
+			return "", nil, false
+		}
+		if data, _, _ := w.onBox("/etc/systemd/system/web.service"); data == old {
+			return "", errors.New("exit status 1"), true
+		}
+		return "", nil, true
+	}
+
+	res := w.tick()
+
+	data, _, _ := w.onBox("/etc/systemd/system/web.service")
+	if res.OK() || data != old || !strings.Contains(w.log.String(), "web.service: rolled back") {
+		t.Fatalf("ok %v, on box %q; log:\n%s", res.OK(), data, w.log.String())
+	}
+}
+
+func TestATemplateOrSliceFileIsOnlyReloaded(t *testing.T) {
+	w := newWorld(t)
+	w.box("/etc/systemd/system/user@.service.d/limits.conf", "old\n", 0o644)
+	w.box("/etc/systemd/system/user-1000.slice.d/weight.conf", "old\n", 0o644)
+	w.git("mutable/n", "systemd/system/user@.service.d/limits.conf", "[Service]\nTasksMax=4096\n", 0o644)
+	w.git("mutable/n", "systemd/system/user-1000.slice.d/weight.conf", "[Slice]\nCPUWeight=25\n", 0o644)
+
+	res := w.tick()
+
+	want := []string{"systemctl daemon-reload", "systemctl daemon-reload"}
+	if !res.OK() || !reflect.DeepEqual(w.node.Calls(), want) {
+		t.Fatalf("ok %v, calls %v; want reloads only, never a restart of user@", res.OK(), w.node.Calls())
+	}
+}
+
+func TestRestartableNamesTheUnitAFileDefines(t *testing.T) {
+	for path, want := range map[string]string{
+		"/etc/systemd/system/crate-apply.timer":                 "crate-apply.timer",
+		"/etc/systemd/system/web.service.d/limits.conf":         "web.service",
+		"/etc/systemd/system/user@.service.d/delegate.conf":     "",
+		"/etc/systemd/system/user.slice.d/crate.conf":           "",
+		"/etc/systemd/system/timers.target.wants/a.timer":       "",
+		"/etc/systemd/system/systemd-oomd.service.d/x.conf":     "systemd-oomd.service",
+		"/etc/systemd/system/multi-user.target.wants/a.service": "",
+	} {
+		if got := restartable(path); got != want {
+			t.Errorf("restartable(%s) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func contains(xs []string, x string) bool {
+	for _, y := range xs {
+		if y == x {
+			return true
+		}
+	}
+	return false
 }

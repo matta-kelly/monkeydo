@@ -116,8 +116,8 @@ func TestAnUnknownLaneIsUsage(t *testing.T) {
 	}
 }
 
-func TestCheckRefusesABadPackageOrAccountList(t *testing.T) {
-	for file, line := range map[string]string{"packages": "rm -rf /", "accounts": "root"} {
+func TestCheckRefusesABadPackageAccountOrUnitList(t *testing.T) {
+	for file, line := range map[string]string{"packages": "rm -rf /", "accounts": "root", "units": "dazoo-sync.timer"} {
 		checkout, _, _ := setup(t, "dazoo/x.conf")
 		if err := os.WriteFile(filepath.Join(checkout, "nodes", "mutable", "n", file), []byte(line+"\n"), 0o644); err != nil {
 			t.Fatal(err)

@@ -1,7 +1,7 @@
 # monkeydo
 
 monkeydo keeps a Linux host matching a git repository. It reads a node's declaration (its files, packages, accounts,
-secrets and Podman Quadlets), compares it with the host, and changes only what differs. Each change is checked after it
+systemd units, secrets and Podman Quadlets), compares it with the host, and changes only what differs. Each change is checked after it
 is applied, and a change that fails its check is rolled back on its own.
 
 Monkey see, monkey do: it does what git says.
@@ -25,11 +25,15 @@ removed from the host, and nothing it did not create is touched.
 
 | Lane | Source in the repo | What it keeps |
 | --- | --- | --- |
-| `files` | `nodes/_shared/etc/`, `nodes/<node>/etc/` | Files under `/etc`, each with the reload its kind needs |
+| `files` | `nodes/_shared/etc/`, `nodes/<node>/etc/` | Files under `/etc`, each with the reload its kind needs. A changed unit file reloads systemd and restarts the unit if it runs |
 | `packages` | `nodes/<node>/packages` | Debian packages. Only packages monkeydo installed are ever removed |
 | `accounts` | `nodes/<node>/accounts` | Users with a home, subuid and subgid ranges, and linger. Never deleted |
+| `units` | `nodes/<node>/units` | systemd services and timers that run outside a container, enabled and running. Only units monkeydo started are ever stopped |
 | `secrets` | `nodes/<node>/secrets/sealed/*.sops` | SOPS-sealed values loaded as Podman secrets. Their containers restart on a change |
 | `containers` | `nodes/<node>/`, `nodes/<node>/users/<account>/` | Quadlets for the system and for each account, in its own systemd |
+
+A unit's file comes from the `files` lane (`etc/systemd/system/`) or from a package. List a timer, not the oneshot
+service it fires: a oneshot ends inactive, so it never reads as running.
 
 Secret values are passed on stdin only, never in arguments or logs. In an account's home, monkeydo reads and writes only
 as that account.
@@ -37,7 +41,7 @@ as that account.
 ## Usage
 
 ```
-monkeydo run   --checkout DIR --node mutable/<name> [--lanes files,packages,accounts,secrets,containers]
+monkeydo run   --checkout DIR --node mutable/<name> [--lanes files,packages,accounts,units,secrets,containers]
 monkeydo check --checkout DIR --node mutable/<name> [--quadlet GENERATOR]
 monkeydo version
 ```
@@ -64,4 +68,4 @@ for systemd units), `node/` (the only code that touches the host), `cmd/monkeydo
 
 ## Status
 
-Not built yet: a lane for crate's machine setup, and commands for immutable images.
+Not built yet: commands for immutable images.

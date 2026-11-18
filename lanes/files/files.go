@@ -1,6 +1,7 @@
 // Package files is the lane for a node's files under /etc. git holds them as trees that mirror /etc: one every node
 // gets (nodes/_shared/etc) and one per node (nodes/<node>/etc), the node's winning where both have a path. Each file
-// changes with the reload its kind needs, and is put back when that reload fails.
+// changes with the reload its kind needs, and is put back when that reload fails. A systemd unit's file is one of these
+// kinds: written here, and started and kept running by the units lane.
 package files
 
 import (
@@ -16,6 +17,7 @@ import (
 
 	"github.com/matta-kelly/monkeydo/engine"
 	"github.com/matta-kelly/monkeydo/node"
+	"github.com/matta-kelly/monkeydo/units"
 )
 
 // NotOwned are the paths the files lane never owns: the box's own files, and those another part of the node keeps. A
@@ -29,9 +31,10 @@ var NotOwned = []string{
 	"/etc/ssh/sshd_config.d/60-crate-router.conf",
 }
 
-// Lane is the files lane on one node.
+// Lane is the files lane on one node. Window is how long a running unit whose file changed is watched after its restart.
 type Lane struct {
-	Node node.Node
+	Node   node.Node
+	Window units.Window
 }
 
 func (Lane) Name() string { return "files" }
@@ -59,7 +62,7 @@ func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]en
 		if ok && bytes.Equal(have.Data, want[p].Data) && have.Mode == want[p].Mode {
 			continue
 		}
-		changes = append(changes, &change{n: l.Node, path: p, want: want[p], keep: true})
+		changes = append(changes, &change{n: l.Node, w: l.Window, path: p, want: want[p], keep: true})
 	}
 	for _, p := range owned {
 		if _, ok := want[p]; ok {
@@ -68,7 +71,7 @@ func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]en
 		if _, ok, err := node.Read(l.Node, p); err != nil {
 			return nil, nil, err
 		} else if ok {
-			changes = append(changes, &change{n: l.Node, path: p, keep: false})
+			changes = append(changes, &change{n: l.Node, w: l.Window, path: p, keep: false})
 		}
 	}
 	return changes, paths, nil
@@ -123,6 +126,7 @@ func read(roots ...string) (map[string]node.File, error) {
 // change is one file to write or to remove.
 type change struct {
 	n    node.Node
+	w    units.Window
 	path string
 	want node.File
 	keep bool // false: the file left git, and goes
@@ -146,7 +150,7 @@ func (c *change) Fix(ctx context.Context) (engine.Undo, error) {
 		if err != nil {
 			return err
 		}
-		return live(ctx, c.n, c.path)
+		return c.live(ctx, had)
 	}
 	if c.keep {
 		err = node.Write(c.n, c.path, c.want)
@@ -161,7 +165,7 @@ func (c *change) Fix(ctx context.Context) (engine.Undo, error) {
 
 // Healthy brings the file live with the reload its kind needs, and checks that it took.
 func (c *change) Healthy(ctx context.Context) error {
-	if err := live(ctx, c.n, c.path); err != nil {
+	if err := c.live(ctx, c.keep); err != nil {
 		return err
 	}
 	if c.keep && isSysctl(c.path) {
@@ -179,19 +183,64 @@ func (c *change) Healthy(ctx context.Context) error {
 }
 
 // live is the reload a file's kind needs. A kind with none needs nothing: whatever reads it reads it when it next does.
-func live(ctx context.Context, n node.Node, path string) error {
+// present is whether the file is on the node now: a unit whose file was removed is not restarted, the units lane stops
+// it.
+func (c *change) live(ctx context.Context, present bool) error {
 	switch {
-	case isSysctl(path):
-		_, err := n.Run(ctx, "sysctl", "--system")
+	case isSysctl(c.path):
+		_, err := c.n.Run(ctx, "sysctl", "--system")
 		return err
-	case strings.HasPrefix(path, "/etc/ssh/sshd_config.d/") && strings.HasSuffix(path, ".conf"):
-		if _, err := n.Run(ctx, "sshd", "-t"); err != nil {
+	case strings.HasPrefix(c.path, "/etc/ssh/sshd_config.d/") && strings.HasSuffix(c.path, ".conf"):
+		if _, err := c.n.Run(ctx, "sshd", "-t"); err != nil {
 			return err
 		}
-		_, err := n.Run(ctx, "systemctl", "reload", "ssh")
+		_, err := c.n.Run(ctx, "systemctl", "reload", "ssh")
 		return err
+	case strings.HasPrefix(c.path, systemdDir):
+		if _, err := c.n.Run(ctx, "systemctl", "daemon-reload"); err != nil {
+			return err
+		}
+		unit := restartable(c.path)
+		if !present || unit == "" {
+			return nil
+		}
+		ctl := units.System(c.n)
+		if _, err := ctl(ctx, "is-active", "--quiet", unit); err != nil {
+			return nil // not running: the units lane starts it, if git lists it
+		}
+		base, err := units.Restart(ctx, ctl, unit)
+		if err != nil {
+			return err
+		}
+		return units.Settle(ctx, ctl, unit, base, c.w)
 	}
 	return nil
+}
+
+const systemdDir = "/etc/systemd/system/"
+
+// restartable is the unit a file under /etc/systemd/system/ defines, its own file or a drop-in, when a change to it
+// takes a restart: a service, timer, socket or path. A slice takes its change at the reload. A template and its
+// instances (a name with @, such as user@.service) are never restarted here: restarting user@ would stop every
+// account's containers.
+func restartable(path string) string {
+	rel := strings.TrimPrefix(path, systemdDir)
+	name, _, _ := strings.Cut(rel, "/")
+	if strings.Contains(rel, "/") {
+		var ok bool
+		if name, ok = strings.CutSuffix(name, ".d"); !ok {
+			return "" // a .wants/ or .requires/ link, not a unit's file
+		}
+	}
+	if strings.Contains(name, "@") {
+		return ""
+	}
+	for _, kind := range []string{".service", ".timer", ".socket", ".path"} {
+		if strings.HasSuffix(name, kind) {
+			return name
+		}
+	}
+	return ""
 }
 
 func isSysctl(path string) bool {
