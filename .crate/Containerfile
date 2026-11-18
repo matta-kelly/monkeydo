@@ -1,5 +1,7 @@
 # monkeydo's dev image: Go at go.mod's version, and just. monkeydo has no modules beyond the standard library, so the
-# image holds nothing of the checkout. Built from the repo's root.
+# image holds nothing of the checkout. crate runs each command as user 1000 with HOME=/home/node, so the image has that
+# user and its home, where Go keeps its caches. Built from the repo's root.
 FROM docker.io/library/golang:1.27-trixie
 RUN export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y --no-install-recommends just && rm -rf /var/lib/apt/lists/*
+RUN useradd --create-home --uid 1000 --home-dir /home/node node
 LABEL org.opencontainers.image.source=https://github.com/matta-kelly/monkeydo
