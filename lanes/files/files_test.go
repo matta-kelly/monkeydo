@@ -157,7 +157,7 @@ func TestAFileThatLeftGitIsRemovedAndOneMonkeydoNeverOwnedIsNot(t *testing.T) {
 }
 
 func TestATreeNamingAFileMonkeydoMayNotOwnIsRefusedWhole(t *testing.T) {
-	for _, rel := range []string{"crate/machine.toml", "containers/systemd/web.container", "dazoo/age.key", "ssh/ssh_host_ed25519_key"} {
+	for _, rel := range []string{"dazoo/sync.env", "containers/systemd/web.container", "dazoo/age.key", "ssh/ssh_host_ed25519_key"} {
 		w := newWorld(t)
 		w.git("_shared", "sysctl.d/80-writeback.conf", writeback, 0o644)
 		w.git("mutable/n", rel, "x\n", 0o644)

@@ -4,6 +4,8 @@
 // that does not come back healthy puts the secret back, for all its consumers at once. A secret that leaves git is
 // left in place: removing one a container still claims would stop it.
 //
+// A secret can also be delivered as a file (files.go).
+//
 // A value never goes in an argument or a log line: it goes to podman on stdin, and an error says which command failed,
 // never what it read.
 package secrets
@@ -59,6 +61,15 @@ func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]en
 	dir := filepath.Join(src.Checkout, "nodes", src.Node, "secrets", "sealed")
 	found, _ := filepath.Glob(filepath.Join(dir, "*.sops"))
 	sort.Strings(found)
+	targets, err := Files(src)
+	if err != nil {
+		return nil, nil, err
+	}
+	asFile := map[string]bool{}
+	for _, t := range targets {
+		asFile[t.name] = true
+	}
+	values := map[string][]byte{}
 	var changes []engine.Change
 	var want []string
 	for _, f := range found {
@@ -74,6 +85,10 @@ func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]en
 		if wrongSeal.Match(value) {
 			return nil, nil, fmt.Errorf(`%s.sops is a wrong seal (a value wrapped as {"data": ...})`, name)
 		}
+		if asFile[name] {
+			values[name] = value
+			continue
+		}
 		want = append(want, name)
 		have, ok, err := node.Read(l.Node, l.delivered(name))
 		if err != nil {
@@ -84,6 +99,37 @@ func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]en
 			continue
 		}
 		changes = append(changes, &change{l: l, name: name, sealed: sealed, value: value})
+	}
+	listed := map[string]bool{}
+	for _, t := range targets {
+		listed[t.path] = true
+		_, full, ok, err := l.where(ctx, t.path)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !ok {
+			continue // the account is not on the node yet: a later tick, after the accounts lane
+		}
+		same, err := l.exact(ctx, t, full, values[t.name])
+		if err != nil {
+			return nil, nil, err
+		}
+		want = append(want, t.path)
+		if !same {
+			changes = append(changes, &fileChange{l: l, t: t, full: full, value: values[t.name]})
+		}
+	}
+	for _, p := range owned {
+		if !isFile(p) || listed[p] {
+			continue
+		}
+		t, full, ok, err := l.where(ctx, p)
+		if err != nil {
+			return nil, nil, err
+		}
+		if ok {
+			changes = append(changes, &fileChange{l: l, t: t, full: full})
+		}
 	}
 	return changes, want, nil
 }

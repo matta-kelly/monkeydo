@@ -84,6 +84,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		report("accounts", len(accts), err)
 		us, err := unitlane.Read(src)
 		report("units", len(us), err)
+		n, err = secrets.CheckFiles(src)
+		report("secret files", n, err)
 		for _, a := range append([]string{""}, containers.Accounts(src)...) {
 			name := "containers"
 			if a != "" {

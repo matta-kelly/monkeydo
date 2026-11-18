@@ -29,11 +29,14 @@ removed from the host, and nothing it did not create is touched.
 | `packages` | `nodes/<node>/packages` | Debian packages. Only packages monkeydo installed are ever removed |
 | `accounts` | `nodes/<node>/accounts` | Users with a home, subuid and subgid ranges, and linger. Never deleted |
 | `units` | `nodes/<node>/units` | systemd services and timers that run outside a container, enabled and running. Only units monkeydo started are ever stopped |
-| `secrets` | `nodes/<node>/secrets/sealed/*.sops` | SOPS-sealed values loaded as Podman secrets. Their containers restart on a change |
+| `secrets` | `nodes/<node>/secrets/sealed/*.sops`, `nodes/<node>/secrets/files` | SOPS-sealed values loaded as Podman secrets, their containers restarted on a change; or, where `files` lists them, written as files, mode 0600 |
 | `containers` | `nodes/<node>/`, `nodes/<node>/users/<account>/` | Quadlets for the system and for each account, in its own systemd |
 
 A unit's file comes from the `files` lane (`etc/systemd/system/`) or from a package. List a timer, not the oneshot
 service it fires: a oneshot ends inactive, so it never reads as running.
+
+A secret file is for a reader that takes a credential only from a file, such as Podman's registry login. Each line of
+`secrets/files` is a sealed name and a path: absolute, written by root, or `~<account>/<path>`, written as that account.
 
 Secret values are passed on stdin only, never in arguments or logs. In an account's home, monkeydo reads and writes only
 as that account.

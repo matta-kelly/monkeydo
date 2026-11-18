@@ -25,10 +25,8 @@ import (
 var NotOwned = []string{
 	"/etc/dazoo/sync.env", "/etc/dazoo/age.key", "/etc/dazoo/deploy_key", "/etc/dazoo/known_hosts", "/etc/dazoo/registry-auth.json",
 	"/etc/tailscale/authkey.env", "/etc/passwd", "/etc/shadow", "/etc/group", "/etc/gshadow", "/etc/sudoers",
-	"/etc/containers/systemd/", "/etc/crate/", "/etc/ssh/ssh_host_",
+	"/etc/containers/systemd/", "/etc/ssh/ssh_host_",
 	"/etc/systemd/system/dazoo-", "/etc/systemd/system/secrets-fetch.service",
-	"/etc/systemd/system/user@.service.d/delegate.conf", "/etc/systemd/system/user.slice.d/crate.conf",
-	"/etc/ssh/sshd_config.d/60-crate-router.conf",
 }
 
 // Lane is the files lane on one node. Window is how long a running unit whose file changed is watched after its restart.

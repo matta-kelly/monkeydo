@@ -65,7 +65,7 @@ func TestCheckRefusesANodeThatRendersNoUnit(t *testing.T) {
 }
 
 func TestCheckRefusesAFileMonkeydoMayNotOwn(t *testing.T) {
-	checkout, _, _ := setup(t, "crate/machine.toml")
+	checkout, _, _ := setup(t, "dazoo/sync.env")
 	code, out := call("check", "--checkout", checkout, "--node", "mutable/n")
 	if code != 1 || !strings.Contains(out, "not monkeydo's") {
 		t.Fatalf("exit %d: %s", code, out)
