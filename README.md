@@ -1,7 +1,7 @@
 # monkeydo
 
-monkeydo keeps a Linux host matching a git repository. It reads a node's declaration (its files, packages, accounts,
-systemd units, secrets and Podman Quadlets), compares it with the host, and changes only what differs. Each change is checked after it
+monkeydo keeps a Linux host matching a git repository. It reads a node's declaration (its files, packages, pinned
+releases, accounts, systemd units, secrets and Podman Quadlets), compares it with the host, and changes only what differs. Each change is checked after it
 is applied, and a change that fails its check is rolled back on its own.
 
 Monkey see, monkey do: it does what git says.
@@ -27,10 +27,14 @@ removed from the host, and nothing it did not create is touched.
 | --- | --- | --- |
 | `files` | `nodes/_shared/etc/`, `nodes/<node>/etc/` | Files under `/etc`, each with the reload its kind needs. A changed unit file reloads systemd and restarts the unit if it runs |
 | `packages` | `nodes/<node>/packages` | Debian packages. Only packages monkeydo installed are ever removed |
+| `releases` | `nodes/<node>/releases` | Software another repo's CI published, pinned by digest: a tarball's https URL and sha256, or an OCI artifact on a registry. Kept at `/usr/local/lib/<name>/<version>`, with `current` and `prev` links |
 | `accounts` | `nodes/<node>/accounts` | Users with a home, subuid and subgid ranges, and linger. Never deleted |
 | `units` | `nodes/<node>/units` | systemd services and timers that run outside a container, enabled and running. Only units monkeydo started are ever stopped |
 | `secrets` | `nodes/<node>/secrets/sealed/*.sops`, `nodes/<node>/secrets/files` | SOPS-sealed values loaded as Podman secrets, their containers restarted on a change; or, where `files` lists them, written as files, mode 0600 |
 | `containers` | `nodes/<node>/`, `nodes/<node>/users/<account>/` | Quadlets for the system and for each account, in its own systemd |
+
+A release is proved by its digest before it is unpacked, and an archive path or link that leaves its folder is refused.
+The version before stays as `prev`, so a program still running from it keeps its files; older versions are removed.
 
 A unit's file comes from the `files` lane (`etc/systemd/system/`) or from a package. List a timer, not the oneshot
 service it fires: a oneshot ends inactive, so it never reads as running.
@@ -44,7 +48,7 @@ as that account.
 ## Usage
 
 ```
-monkeydo run   --checkout DIR --node mutable/<name> [--lanes files,packages,accounts,units,secrets,containers]
+monkeydo run   --checkout DIR --node mutable/<name> [--lanes files,packages,releases,accounts,units,secrets,containers]
 monkeydo check --checkout DIR --node mutable/<name> [--quadlet GENERATOR]
 monkeydo version
 ```

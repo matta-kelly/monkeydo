@@ -1,7 +1,7 @@
 // monkeydo keeps a node true to git: each tick it compares a dazoo checkout with the node, changes what differs, and
 // puts back a change that fails its health check.
 //
-//	monkeydo run --checkout DIR --node mutable/<name> [--lanes files,packages,accounts,units,secrets,containers] [--root /] [--state /var/lib/monkeydo]
+//	monkeydo run --checkout DIR --node mutable/<name> [--lanes files,packages,releases,accounts,units,secrets,containers] [--root /] [--state /var/lib/monkeydo]
 //	monkeydo check --checkout DIR --node mutable/<name> [--quadlet GENERATOR]
 //	monkeydo version
 //
@@ -24,6 +24,7 @@ import (
 	"github.com/matta-kelly/monkeydo/lanes/containers"
 	"github.com/matta-kelly/monkeydo/lanes/files"
 	"github.com/matta-kelly/monkeydo/lanes/packages"
+	"github.com/matta-kelly/monkeydo/lanes/releases"
 	"github.com/matta-kelly/monkeydo/lanes/secrets"
 	unitlane "github.com/matta-kelly/monkeydo/lanes/units"
 	"github.com/matta-kelly/monkeydo/node"
@@ -56,7 +57,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	root := fl.String("root", "/", "the folder that stands for /")
 	state := fl.String("state", "/var/lib/monkeydo", "where monkeydo keeps its record")
 	quadlet := fl.String("quadlet", "", "check: prove each render with this quadlet generator, as the node does")
-	laneList := fl.String("lanes", "files", "the lanes to run, in this order: files, packages, accounts, units, secrets, containers")
+	laneList := fl.String("lanes", "files", "the lanes to run, in this order: files, packages, releases, accounts, units, secrets, containers")
 	if err := fl.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -80,6 +81,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		report("files", n, err)
 		pkgs, err := packages.Read(src)
 		report("packages", len(pkgs), err)
+		rels, err := releases.Read(src)
+		report("releases", len(rels), err)
 		accts, err := accounts.Read(src)
 		report("accounts", len(accts), err)
 		us, err := unitlane.Read(src)
@@ -112,7 +115,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	n := node.Real{Root: *root}
-	known := map[string]engine.Lane{"files": files.Lane{Node: n, Window: units.Default}, "packages": packages.Lane{Node: n},
+	known := map[string]engine.Lane{"files": files.Lane{Node: n, Window: units.Default}, "packages": packages.Lane{Node: n}, "releases": releases.Lane{Node: n},
 		"accounts": accounts.Lane{Node: n}, "units": unitlane.Lane{Node: n, Window: units.Default},
 		"secrets": secrets.Lane{Node: n, Window: units.Default}, "containers": containers.Lane{Node: n, Window: units.Default}}
 	var lanes []engine.Lane
@@ -128,7 +131,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		lane, ok := known[name]
 		if !ok {
-			fmt.Fprintf(stderr, "monkeydo: no lane %q: files, packages, accounts, units, secrets or containers\n", name)
+			fmt.Fprintf(stderr, "monkeydo: no lane %q: files, packages, releases, accounts, units, secrets or containers\n", name)
 			return 2
 		}
 		lanes = append(lanes, lane)
