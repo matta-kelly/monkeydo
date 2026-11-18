@@ -1,0 +1,45 @@
+# Publishes monkeydo's release when a version tag `v<version>` is pushed: the check first, then the binary built with
+# that version in it, as monkeydo-linux-amd64.tar.gz on the GitHub release of the tag. crate makes the tag on the
+# server from the commit types, after the repo's check passed there, and copies it here. The tag is the version. A node
+# takes a release by its pin in dazoo (nodes/<node>/monkeydo.pin): the version and the tarball's sha256, which the run
+# prints.
+name: publish
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    # The one job that writes to the repo: the release and its asset, with the run's own token.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          just-version: '1.56.0'
+      - run: scripts/check.sh
+      # A release GitHub has already is left as it is: a run again, or a version released by hand.
+      - name: Build and release, if GitHub does not have this version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub has $TAG already"
+            exit 0
+          fi
+          just tarball "${TAG#v}"
+          gh release create "$TAG" dist/monkeydo-linux-amd64.tar.gz --title "monkeydo ${TAG#v}" --notes "monkeydo ${TAG#v}"
+          printf 'VERSION=%s\nSHA256=%s\n' "${TAG#v}" "$(sha256sum dist/monkeydo-linux-amd64.tar.gz | cut -d' ' -f1)" | tee -a "$GITHUB_STEP_SUMMARY"

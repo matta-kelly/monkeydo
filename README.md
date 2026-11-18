@@ -72,9 +72,13 @@ monkeydo version
 ## Development
 
 ```
-just check                  # gofmt, go vet, go test (CI runs the same; main requires it)
-just release <x.y.z>        # check, build, tag, publish monkeydo-linux-amd64.tar.gz, print VERSION and SHA256
+just check                  # scripts/check.sh: gofmt, go vet, go test. crate's merge queue runs the same
+just build                  # the binary, in dist/monkeydo/bin
 ```
+
+A change lands through crate's merge queue on the server (`git land`). Each move of main whose commits ask one
+(Conventional Commits) is tagged `v<x.y.z>` by crate, and `publish.yml` puts `monkeydo-linux-amd64.tar.gz` on that
+GitHub release and prints its VERSION and SHA256, the pin a node takes in dazoo.
 
 Code layout: `engine/` (the run and its record), `lanes/` (one package per lane), `units/` (restart and health checks
 for systemd units), `node/` (the only code that touches the host), `cmd/monkeydo/` (the command).

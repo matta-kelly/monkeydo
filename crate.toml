@@ -1,0 +1,10 @@
+# monkeydo's check and its release, made by crate (github.com/matta-kelly/crate) from this file: in a workspace, in
+# the factory, and in the merge queue's check of each change to main on the server. Each move of main whose commits ask
+# one is tagged v<version>, and .github/workflows/publish.yml puts the binary's tarball on that GitHub release.
+crate = "3"
+name = "monkeydo"
+image = "dev"     # the check runs in the dev image, [dev] below
+ship = "source"   # the version tag; publish.yml builds the tarball from it
+
+[dev]             # the dev image: the files its hash covers
+inputs = [".crate/Containerfile", "go.mod"]

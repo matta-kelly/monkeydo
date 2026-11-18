@@ -1,0 +1,5 @@
+# monkeydo's dev image: Go at go.mod's version, and just. monkeydo has no modules beyond the standard library, so the
+# image holds nothing of the checkout. Built from the repo's root.
+FROM docker.io/library/golang:1.27-trixie
+RUN export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y --no-install-recommends just && rm -rf /var/lib/apt/lists/*
+LABEL org.opencontainers.image.source=https://github.com/matta-kelly/monkeydo
