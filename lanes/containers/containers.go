@@ -375,7 +375,12 @@ func (c *change) Fix(ctx context.Context) (engine.Undo, error) {
 		if err := c.sc.remove(ctx, c.file); err != nil {
 			return undo, err
 		}
-		return undo, c.reload(ctx)
+		if err := c.reload(ctx); err != nil {
+			return undo, err
+		}
+		// a unit that did not stop cleanly is kept as failed with no file; that record is of a unit git no longer has
+		c.sc.ctl()(ctx, "reset-failed", u)
+		return undo, nil
 	}
 	if err := c.sc.write(ctx, c.file, c.data); err != nil {
 		return undo, err

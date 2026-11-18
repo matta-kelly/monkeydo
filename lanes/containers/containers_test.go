@@ -208,6 +208,9 @@ func TestAFileGitLacksIsStoppedBeforeItIsRemoved(t *testing.T) {
 	if _, ok := w.onBox("old.container"); ok || !res.OK() || !contains(w.sd.stopped, "old.service") {
 		t.Fatalf("still on box %v, ok %v, stopped %v", ok, res.OK(), w.sd.stopped)
 	}
+	if !contains(w.sd.n.Calls(), "systemctl reset-failed old.service") {
+		t.Fatal("a removed unit's failed record was left behind")
+	}
 }
 
 func TestARenderThatCannotBeProvedChangesNothing(t *testing.T) {
