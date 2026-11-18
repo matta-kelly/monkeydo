@@ -217,3 +217,49 @@ func TestASecondTickChangesNothing(t *testing.T) {
 		t.Fatalf("ok %v, log %q", res.OK(), w.log.String())
 	}
 }
+
+func TestTheContainersRangeIsWrittenWithNoUser(t *testing.T) {
+	w := newWorld(t)
+	w.list("core\ncontainers\n")
+
+	res := w.tick()
+
+	for _, f := range []string{"/etc/subuid", "/etc/subgid"} {
+		if !strings.Contains(w.file(f), "containers:2147483647:2147483648\n") || !strings.Contains(w.file(f), "core:100000:65536") {
+			t.Fatalf("ok %v, %s = %q; log:\n%s", res.OK(), f, w.file(f), w.log.String())
+		}
+	}
+	for _, c := range w.host.n.Calls() {
+		if strings.Contains(c, "useradd") || strings.Contains(c, "linger containers") || strings.Contains(c, "show-user containers") {
+			t.Fatalf("the range made or asked for a user: %s", c)
+		}
+	}
+	if !res.OK() {
+		t.Fatalf("log:\n%s", w.log.String())
+	}
+	if res := w.tick(); !res.OK() || w.log.Len() != 0 {
+		t.Fatalf("a second tick: ok %v, log %q", res.OK(), w.log.String())
+	}
+}
+
+func TestANewAccountsRangeGoesBelowTheContainersRange(t *testing.T) {
+	w := newWorld(t)
+	w.list("containers\n")
+	w.tick()
+	w.list("containers\nshop\n")
+
+	res := w.tick()
+
+	if !res.OK() || !strings.Contains(w.file("/etc/subuid"), "shop:165536:65536") {
+		t.Fatalf("ok %v, subuid %q; log:\n%s", res.OK(), w.file("/etc/subuid"), w.log.String())
+	}
+}
+
+func TestTheContainersRangeIsRefusedWhereItOverlaps(t *testing.T) {
+	w := newWorld(t)
+	w.host.appendRange("/etc/subuid", "big", 2147483000)
+	w.list("containers\n")
+	if res := w.tick(); res.OK() || strings.Contains(w.file("/etc/subuid"), "containers:") {
+		t.Fatalf("ok %v, subuid %q", res.OK(), w.file("/etc/subuid"))
+	}
+}

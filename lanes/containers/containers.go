@@ -1,8 +1,9 @@
 // Package containers is the lane for a node's Quadlets: the .container, .network, .volume, .image, .pod, .kube and
 // .build files git has for one scope, rendered with the node's DOMAIN. The system's come from nodes/<node>/ (users/
-// aside) into /etc/containers/systemd; an account's from nodes/<node>/users/<account>/ into the account's
-// ~/.config/containers/systemd, run by its own systemd. The lane owns the folder whole: a file there that git lacks is
-// stopped and removed.
+// and apps/ aside) into /etc/containers/systemd; an account's from nodes/<node>/users/<account>/ into the account's
+// ~/.config/containers/systemd, run by its own systemd. The system's folder also has each app's run files and the
+// node's drop-ins for them (apps.go). The lane owns the folder whole: a file there that git lacks is stopped and
+// removed.
 //
 // Before anything changes, the render is proved: no placeholder left, something rendered, and Podman's generator
 // accepts it. Then each file that moved is written, systemd reloads, and its unit restarts and must settle; one that
@@ -101,7 +102,7 @@ func Render(src engine.Source, account string) (map[string][]byte, error) {
 			return err
 		}
 		if d.IsDir() {
-			if account == "" && p == filepath.Join(nodeDir, "users") {
+			if account == "" && (p == filepath.Join(nodeDir, "users") || p == filepath.Join(nodeDir, "apps")) {
 				return fs.SkipDir
 			}
 			return nil
@@ -129,14 +130,30 @@ func Render(src engine.Source, account string) (map[string][]byte, error) {
 	return out, err
 }
 
-// unit is the systemd unit a Quadlet file makes.
+// base is the Quadlet file a path is for: the file itself, or the file a drop-in (<file>.d/<name>.conf) is for.
+func base(file string) string {
+	if dir, _, ok := strings.Cut(file, "/"); ok {
+		return strings.TrimSuffix(dir, ".d")
+	}
+	return file
+}
+
+// dropIn is whether a path is a drop-in, not a Quadlet file.
+func dropIn(file string) bool { return strings.Contains(file, "/") }
+
+// unit is the systemd unit a Quadlet file makes, or the unit of the file a drop-in is for.
 func unit(file string) string {
+	file = base(file)
 	ext := filepath.Ext(file)
 	return strings.TrimSuffix(file, ext) + kinds[ext] + ".service"
 }
 
-// rank orders the files a tick writes: builds, then networks, volumes and the rest, then containers.
+// rank orders the files a tick writes: builds, then networks, volumes, drop-ins and the rest, then containers, so a
+// container starts with its drop-ins in place.
 func rank(file string) int {
+	if dropIn(file) {
+		return 1
+	}
 	switch filepath.Ext(file) {
 	case ".build":
 		return 0
@@ -160,6 +177,11 @@ func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]en
 	want, err := Render(src, l.Account)
 	if err != nil {
 		return nil, nil, err
+	}
+	if l.Account == "" {
+		if err := renderApps(l.Node, src, want); err != nil {
+			return nil, nil, err
+		}
 	}
 	if len(want) == 0 {
 		return nil, nil, fmt.Errorf("rendered nothing for %s: applying it would remove every unit", l.Name())
@@ -208,10 +230,16 @@ func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]en
 			continue
 		}
 		moved[name] = true
-		changes = append(changes, &change{sc: sc, w: l.Window, file: name, keep: true, data: want[name]})
+	}
+	for _, name := range names {
+		if moved[name] {
+			// a drop-in restarts its unit itself only when the unit's own file stays: one that moves restarts it after
+			restarts := !dropIn(name) || !moved[base(name)]
+			changes = append(changes, &change{sc: sc, w: l.Window, file: name, keep: true, data: want[name], restarts: restarts})
+		}
 	}
 	for _, name := range same {
-		if filepath.Ext(name) != ".container" {
+		if dropIn(name) || filepath.Ext(name) != ".container" {
 			continue
 		}
 		if uses(want[name], moved) {
@@ -258,6 +286,9 @@ func (l Lane) validate(ctx context.Context, want map[string][]byte) error {
 	}
 	defer os.RemoveAll(stage)
 	for name, data := range want {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(stage, name)), 0o755); err != nil {
+			return err
+		}
 		if err := os.WriteFile(filepath.Join(stage, name), data, 0o644); err != nil {
 			return err
 		}
@@ -280,13 +311,19 @@ func (l Lane) neverStarted(ctx context.Context, sc scope, u string) bool {
 	return strings.TrimSpace(load) == "loaded" && strings.TrimSpace(active) == "inactive" && strings.TrimSpace(entered) == "0"
 }
 
-// change writes or removes one Quadlet file, and brings its unit to match.
+// change writes or removes one Quadlet file or drop-in, and brings its unit to match.
 type change struct {
-	sc   scope
-	w    units.Window
-	file string
-	keep bool
-	data []byte
+	sc       scope
+	w        units.Window
+	file     string
+	keep     bool
+	data     []byte
+	restarts bool // a written drop-in restarts its unit: its file does not move this tick
+}
+
+// restartsUnit is whether writing this path restarts its unit and watches it settle.
+func (c *change) restartsUnit() bool {
+	return c.keep && c.restarts && restarted[filepath.Ext(base(c.file))]
 }
 
 func (c *change) Thing() string { return c.sc.path(c.file) }
@@ -311,17 +348,26 @@ func (c *change) Fix(ctx context.Context) (engine.Undo, error) {
 			if err := c.reload(ctx); err != nil {
 				return err
 			}
-			if restarted[filepath.Ext(c.file)] {
+			if restarted[filepath.Ext(base(c.file))] && (!dropIn(c.file) || c.restarts) {
 				_, err := c.sc.ctl()(ctx, "restart", u)
 				return err
 			}
 			return nil
 		}
-		c.sc.ctl()(ctx, "stop", u)
+		if !dropIn(c.file) {
+			c.sc.ctl()(ctx, "stop", u)
+		}
 		if err := c.sc.remove(ctx, c.file); err != nil {
 			return err
 		}
 		return c.reload(ctx)
+	}
+	if !c.keep && dropIn(c.file) {
+		// a drop-in that goes leaves its unit to its file: the file goes too, or changes, in the same tick
+		if err := c.sc.remove(ctx, c.file); err != nil {
+			return undo, err
+		}
+		return undo, c.reload(ctx)
 	}
 	if !c.keep {
 		// a unit whose file goes keeps running after a reload, so it is stopped first
@@ -340,7 +386,7 @@ func (c *change) Fix(ctx context.Context) (engine.Undo, error) {
 // Healthy restarts a changed unit and watches it settle. A removal, or a kind whose unit is not restarted, has nothing
 // to watch.
 func (c *change) Healthy(ctx context.Context) error {
-	if !c.keep || !restarted[filepath.Ext(c.file)] {
+	if !c.restartsUnit() {
 		return nil
 	}
 	return settle(ctx, c.sc.ctl(), unit(c.file), c.w)

@@ -34,6 +34,12 @@ func (s *sd) fileOf(u string) string {
 			name = strings.TrimSuffix(base, "-"+ext[1:])
 		}
 		if data, err := os.ReadFile(s.n.Path("/etc/containers/systemd/" + name + ext)); err == nil {
+			// a unit is its file and its drop-ins
+			drops, _ := filepath.Glob(s.n.Path("/etc/containers/systemd/" + name + ext + ".d/*.conf"))
+			for _, d := range drops {
+				more, _ := os.ReadFile(d)
+				data = append(data, more...)
+			}
 			return string(data)
 		}
 	}

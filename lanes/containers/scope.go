@@ -56,6 +56,20 @@ func (s system) list(context.Context) ([]string, error) {
 	for _, e := range entries {
 		if !e.IsDir() {
 			out = append(out, e.Name())
+			continue
+		}
+		if !dropInDir(e.Name()) {
+			continue
+		}
+		// a drop-in folder's files are the lane's too: the node's side of an app
+		drops, err := os.ReadDir(s.n.Path(filepath.Join(s.dir, e.Name())))
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range drops {
+			if !d.IsDir() {
+				out = append(out, e.Name()+"/"+d.Name())
+			}
 		}
 	}
 	sort.Strings(out)
@@ -71,7 +85,19 @@ func (s system) write(_ context.Context, file string, data []byte) error {
 	return node.Write(s.n, s.path(file), node.File{Data: data, Mode: 0o644})
 }
 
-func (s system) remove(_ context.Context, file string) error { return node.Remove(s.n, s.path(file)) }
+// remove removes a file, and a drop-in folder its last drop-in leaves empty.
+func (s system) remove(_ context.Context, file string) error {
+	if err := node.Remove(s.n, s.path(file)); err != nil {
+		return err
+	}
+	if dropIn(file) {
+		dir := s.n.Path(filepath.Dir(s.path(file)))
+		if left, err := os.ReadDir(dir); err == nil && len(left) == 0 {
+			return os.Remove(dir)
+		}
+	}
+	return nil
+}
 
 // account is ~/.config/containers/systemd of one account. Every read and write there runs as the account, with git's
 // bytes on stdin: root never follows a path the account controls.

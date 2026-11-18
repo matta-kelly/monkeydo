@@ -28,10 +28,10 @@ removed from the host, and nothing it did not create is touched.
 | `files` | `nodes/_shared/etc/`, `nodes/<node>/etc/` | Files under `/etc`, each with the reload its kind needs. A changed unit file reloads systemd and restarts the unit if it runs |
 | `packages` | `nodes/<node>/packages` | Debian packages. Only packages monkeydo installed are ever removed |
 | `releases` | `nodes/<node>/releases` | Software another repo's CI published, pinned by digest: a tarball's https URL and sha256, or an OCI artifact on a registry. Kept at `/usr/local/lib/<name>/<version>`, with `current` and `prev` links |
-| `accounts` | `nodes/<node>/accounts` | Users with a home, subuid and subgid ranges, and linger. Never deleted |
+| `accounts` | `nodes/<node>/accounts` | Users with a home, subuid and subgid ranges, and linger. Never deleted. The name `containers` is rootful Podman's range for `UserNS=auto`, with no user |
 | `units` | `nodes/<node>/units` | systemd services and timers that run outside a container, enabled and running. Only units monkeydo started are ever stopped |
 | `secrets` | `nodes/<node>/secrets/sealed/*.sops`, `nodes/<node>/secrets/files` | SOPS-sealed values loaded as Podman secrets, their containers restarted on a change; or, where `files` lists them, written as files, mode 0600 |
-| `containers` | `nodes/<node>/`, `nodes/<node>/users/<account>/` | Quadlets for the system and for each account, in its own systemd |
+| `containers` | `nodes/<node>/`, `nodes/<node>/users/<account>/`, `nodes/<node>/apps/<app>/` | Quadlets for the system and for each account, in its own systemd; and each app's run files from its release, with the node's drop-ins |
 
 A release is proved by its digest before it is unpacked, and an archive path or link that leaves its folder is refused.
 The version before stays as `prev`, so a program still running from it keeps its files; older versions are removed.
@@ -41,6 +41,12 @@ service it fires: a oneshot ends inactive, so it never reads as running.
 
 A secret file is for a reader that takes a credential only from a file, such as Podman's registry login. Each line of
 `secrets/files` is a sealed name and a path: absolute, written by root, or `~<account>/<path>`, written as that account.
+
+An app is a release whose run files are Quadlets: its repo ships them, with nothing about the node. git holds the node's
+side in `apps/<app>/<file>.container.d/<name>.conf`, one drop-in for each of the app's containers (network, ports,
+registry login, order, settings). Both go into `/etc/containers/systemd`, so a new release or drop-in restarts only what
+it changed, and a unit that does not settle is put back. Each app container runs in its own user namespace: its drop-in
+must set `UserNS=auto`, and an app file that sets `UserNS` is refused, in `check` and on the node.
 
 Secret values are passed on stdin only, never in arguments or logs. In an account's home, monkeydo reads and writes only
 as that account.

@@ -108,6 +108,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			}
 			report(name, len(quads), err)
 		}
+		n, err = containers.CheckApps(src)
+		report("apps", n, err)
 		if bad {
 			return 1
 		}
