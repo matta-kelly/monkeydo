@@ -29,15 +29,17 @@ removed from the host, and nothing it did not create is touched.
 | `packages` | `nodes/<node>/packages` | Debian packages. Only packages monkeydo installed are ever removed |
 | `releases` | `nodes/<node>/releases` | Software another repo's CI published, pinned by digest: a tarball's https URL and sha256, or an OCI artifact on a registry. Kept at `/usr/local/lib/<name>/<version>`, with `current` and `prev` links |
 | `accounts` | `nodes/<node>/accounts` | Users with a home, subuid and subgid ranges, and linger. Never deleted. The name `containers` is rootful Podman's range for `UserNS=auto`, with no user |
-| `units` | `nodes/<node>/units` | systemd services and timers that run outside a container, enabled and running. Only units monkeydo started are ever stopped |
 | `secrets` | `nodes/<node>/secrets/sealed/*.sops`, `nodes/<node>/secrets/files` | SOPS-sealed values loaded as Podman secrets, their containers restarted on a change; or, where `files` lists them, written as files, mode 0600 |
 | `containers` | `nodes/<node>/`, `nodes/<node>/users/<account>/`, `nodes/<node>/apps/<app>/` | Quadlets for the system and for each account, in its own systemd; and each app's run files from its release, with the node's drop-ins |
+| `units` | `nodes/<node>/units` | systemd services and timers that run outside a container, enabled and running. Only units monkeydo started are ever stopped |
 
 A release is proved by its digest before it is unpacked, and an archive path or link that leaves its folder is refused.
 The version before stays as `prev`, so a program still running from it keeps its files; older versions are removed.
 
 A unit's file comes from the `files` lane (`etc/systemd/system/`) or from a package. List a timer, not the oneshot
-service it fires: a oneshot ends inactive, so it never reads as running.
+service it fires: a oneshot ends inactive, so it never reads as running. The lanes run in the table's order, `units`
+last: a timer can fire a Quadlet's service, which the `containers` lane makes, and systemd refuses to start a timer
+whose unit is not loaded.
 
 A job is a container its timer starts, as a CronJob is to a Deployment: a Quadlet with `Type=oneshot`, no
 `RemainAfterExit=yes` and no `[Install]`, beside a timer in `etc/systemd/system/` that `units` lists. A change to the
@@ -59,7 +61,7 @@ as that account.
 ## Usage
 
 ```
-monkeydo run   --checkout DIR --node mutable/<name> [--lanes files,packages,releases,accounts,units,secrets,containers]
+monkeydo run   --checkout DIR --node mutable/<name> [--lanes files,packages,releases,accounts,secrets,containers,units]
 monkeydo check --checkout DIR --node mutable/<name> [--quadlet GENERATOR]
 monkeydo version
 ```

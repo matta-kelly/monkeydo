@@ -1,7 +1,7 @@
 // monkeydo keeps a node true to git: each tick it compares a dazoo checkout with the node, changes what differs, and
 // puts back a change that fails its health check.
 //
-//	monkeydo run --checkout DIR --node mutable/<name> [--lanes files,packages,releases,accounts,units,secrets,containers] [--root /] [--state /var/lib/monkeydo]
+//	monkeydo run --checkout DIR --node mutable/<name> [--lanes files,packages,releases,accounts,secrets,containers,units] [--root /] [--state /var/lib/monkeydo]
 //	monkeydo check --checkout DIR --node mutable/<name> [--quadlet GENERATOR]
 //	monkeydo version
 //
@@ -57,7 +57,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	root := fl.String("root", "/", "the folder that stands for /")
 	state := fl.String("state", "/var/lib/monkeydo", "where monkeydo keeps its record")
 	quadlet := fl.String("quadlet", "", "check: prove each render with this quadlet generator, as the node does")
-	laneList := fl.String("lanes", "files", "the lanes to run, in this order: files, packages, releases, accounts, units, secrets, containers")
+	laneList := fl.String("lanes", "files", "the lanes to run, in this order: files, packages, releases, accounts, secrets, containers, units")
 	if err := fl.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -133,7 +133,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		lane, ok := known[name]
 		if !ok {
-			fmt.Fprintf(stderr, "monkeydo: no lane %q: files, packages, releases, accounts, units, secrets or containers\n", name)
+			fmt.Fprintf(stderr, "monkeydo: no lane %q: files, packages, releases, accounts, secrets, containers or units\n", name)
 			return 2
 		}
 		lanes = append(lanes, lane)
