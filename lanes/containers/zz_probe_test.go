@@ -1,17 +1,20 @@
 package containers
 
 import (
-	"context"
+	"os"
 	"testing"
 )
 
 func TestZZProbe(t *testing.T) {
 	w := accountAppWorld(t)
-	sc, _ := (Lane{Node: w.box.n, Account: "assembly"}).scope(context.Background())
-	sc.write(context.Background(), "shop.container", []byte("x"))
-	got, err := sc.list(context.Background())
-	t.Logf("list %q %v", got, err)
-	for _, c := range w.box.n.Calls() {
-		t.Logf("call %q", c)
-	}
+	w.appTick("assembly")
+	os.RemoveAll(w.checkout + "/nodes/mutable/n/users/assembly/apps")
+	res := w.appTick("assembly")
+	t.Logf("res %v\nlog:%s", res, w.log.String())
+	t.Logf("drop %v", at(w, "shop.container.d/node.conf"))
+}
+
+func at(w *acctWorld, f string) bool {
+	_, ok := w.at("assembly", f)
+	return ok
 }

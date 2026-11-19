@@ -206,14 +206,27 @@ func (a account) read(ctx context.Context, file string) ([]byte, bool, error) {
 }
 
 func (a account) write(ctx context.Context, file string, data []byte) error {
-	if _, err := a.as(ctx, nil, "mkdir", "-p", a.dir); err != nil {
+	// a drop-in lives one folder deeper than a Quadlet file, in <file>.<kind>.d/
+	if _, err := a.as(ctx, nil, "mkdir", "-p", filepath.Dir(a.path(file))); err != nil {
 		return err
 	}
 	_, err := a.as(ctx, data, "sh", "-c", `cat >"$1.monkeydo" && mv -f "$1.monkeydo" "$1"`, "sh", a.path(file))
 	return err
 }
 
+// remove removes a file, and a drop-in folder its last drop-in leaves empty.
 func (a account) remove(ctx context.Context, file string) error {
-	_, err := a.as(ctx, nil, "rm", "-f", a.path(file))
+	if _, err := a.as(ctx, nil, "rm", "-f", a.path(file)); err != nil {
+		return err
+	}
+	if !dropIn(file) {
+		return nil
+	}
+	// a folder the account still reads as empty is not there, and rmdir says so; one with a DropIn= of its own stays
+	dir := filepath.Dir(a.path(file))
+	if _, err := a.as(ctx, nil, "ls", "-1", dir); err != nil {
+		return nil
+	}
+	_, err := a.as(ctx, nil, "rmdir", dir)
 	return err
 }

@@ -359,6 +359,7 @@ func (c *change) Fix(ctx context.Context) (engine.Undo, error) {
 		if !dropIn(c.file) {
 			c.sc.ctl()(ctx, "stop", u)
 		}
+		// a drop-in's write makes its folder again: a removal takes the folder last, so the undo finds it gone
 		if err := c.sc.remove(ctx, c.file); err != nil {
 			return err
 		}

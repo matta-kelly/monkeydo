@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -48,8 +49,7 @@ func (b *acctBox) do(line string, stdin []byte) (string, error, bool) {
 		case "stop", "disable":
 			b.stopped = append(b.stopped, args[len(args)-1])
 		case "is-failed":
-			data, _ := os.ReadFile(b.n.Path(home + "/.config/containers/systemd/" + strings.TrimSuffix(args[2], ".service") + ".container"))
-			if b.sickWhen != "" && strings.Contains(string(data), b.sickWhen) {
+			if b.sickWhen != "" && strings.Contains(b.unitFile(args[2]), b.sickWhen) {
 				return "", nil, true
 			}
 			return "", errors.New("exit status 1"), true
@@ -66,6 +66,28 @@ func (b *acctBox) do(line string, stdin []byte) (string, error, bool) {
 		return "", nil, true
 	}
 	return "", nil, false
+}
+
+// unitFile is what a unit of the account's is made of: its file and its drop-ins, in name order as Quadlet reads them,
+// so a drop-in that breaks the unit is seen to. A drop-in is <file>.<kind>.d/<name>.conf beside the file.
+func (b *acctBox) unitFile(u string) string {
+	dir := b.n.Path(home + "/.config/containers/systemd")
+	name := strings.TrimSuffix(u, ".service")
+	for ext := range kinds {
+		file := name + ext
+		if _, err := os.Stat(filepath.Join(dir, file)); err != nil {
+			continue
+		}
+		data, _ := os.ReadFile(filepath.Join(dir, file))
+		drops, _ := filepath.Glob(filepath.Join(dir, file+".d", "*.conf"))
+		sort.Strings(drops)
+		for _, d := range drops {
+			more, _ := os.ReadFile(d)
+			data = append(data, more...)
+		}
+		return string(data)
+	}
+	return ""
 }
 
 // asAccount does what a command run as an account would, on files under the fake root: each answer is the real
@@ -124,6 +146,16 @@ func (b *acctBox) asAccount(cmd []string, stdin []byte) (string, error, bool) {
 	case "rm":
 		os.Remove(p(cmd[2]))
 		return "", nil, true
+	case "rmdir":
+		// rmdir <dir>: it takes an empty folder and refuses one with anything in it, as on the node
+		entries, err := os.ReadDir(p(cmd[1]))
+		if err != nil {
+			return "", errors.New("exit status 1"), true
+		}
+		if len(entries) > 0 {
+			return "", errors.New("exit status 1"), true
+		}
+		return "", os.Remove(p(cmd[1])), true
 	}
 	return "", errors.New("unexpected: " + strings.Join(cmd, " ")), true
 }
