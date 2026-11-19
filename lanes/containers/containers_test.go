@@ -293,3 +293,44 @@ func TestAGeneratorRefusalNamesOnlyItsReason(t *testing.T) {
 		t.Fatalf("reasons = %q", got)
 	}
 }
+
+const job = "[Container]\nImage=docker.io/renovate/renovate@sha256:abc\n[Service]\nType=oneshot\n"
+
+func TestAJobIsWrittenButNotStarted(t *testing.T) {
+	w := newWorld(t)
+	w.git("renovate/renovate.container", job)
+
+	res := w.tick()
+
+	if _, ok := w.onBox("renovate.container"); !res.OK() || !ok {
+		t.Fatalf("ok %v, on box %v; log:\n%s", res.OK(), ok, w.log.String())
+	}
+	if w.sd.started["renovate.service"] {
+		t.Fatal("a job was started: its timer starts it")
+	}
+}
+
+func TestAJobNeverStartedSinceBootIsLeftToItsTimer(t *testing.T) {
+	w := newWorld(t)
+	w.git("renovate.container", job)
+	w.tick()
+	w.sd.never["renovate.service"] = true
+	w.tick()
+	if w.sd.started["renovate.service"] {
+		t.Fatal("a job was started: its timer starts it")
+	}
+}
+
+func TestAChangedJobIsNotJudgedByARun(t *testing.T) {
+	w := newWorld(t)
+	w.sd.sickWhen = "Image=broken"
+	w.git("renovate.container", job)
+	w.tick()
+	w.git("renovate.container", strings.Replace(job, "Image=docker.io/renovate/renovate@sha256:abc", "Image=broken", 1))
+
+	res := w.tick()
+
+	if data, _ := w.onBox("renovate.container"); !res.OK() || !strings.Contains(data, "Image=broken") {
+		t.Fatalf("ok %v, on box %q; log:\n%s", res.OK(), data, w.log.String())
+	}
+}

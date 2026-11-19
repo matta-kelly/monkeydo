@@ -1,8 +1,8 @@
 // Package secrets is the lane for a node's sealed secrets. git holds each as nodes/<node>/secrets/sealed/<name>.sops,
 // sealed with SOPS to the node's age key. The lane proves each opens on this node and is no wrong seal, delivers the
-// ciphertext, loads the value as the podman secret <name>, and restarts every container that claims it. A container
-// that does not come back healthy puts the secret back, for all its consumers at once. A secret that leaves git is
-// left in place: removing one a container still claims would stop it.
+// ciphertext, loads the value as the podman secret <name>, and restarts every container that claims it, except a job,
+// which reads it at its next run. A container that does not come back healthy puts the secret back, for all its
+// consumers at once. A secret that leaves git is left in place: removing one a container still claims would stop it.
 //
 // A secret can also be delivered as a file (files.go).
 //
@@ -150,14 +150,15 @@ func (l Lane) load(ctx context.Context, name string, value []byte) error {
 	return err
 }
 
-// consumers are the units of the quadlets that claim name: a line Secret=<name>, or Secret=<name>,<options>.
+// consumers are the units of the quadlets that claim name: a line Secret=<name>, or Secret=<name>,<options>. A job
+// (units.Job) is not one: its timer starts it, and it reads the new value at its next run.
 func (l Lane) consumers(name string) []string {
 	files, _ := filepath.Glob(filepath.Join(l.Node.Path(l.Quadlets), "*.container"))
 	sort.Strings(files)
 	var out []string
 	for _, f := range files {
 		data, err := os.ReadFile(f)
-		if err != nil {
+		if err != nil || units.Job(data) {
 			continue
 		}
 		for _, line := range strings.Split(string(data), "\n") {

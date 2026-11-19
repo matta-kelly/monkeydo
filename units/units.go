@@ -79,3 +79,35 @@ func restarts(ctx context.Context, ctl Ctl, unit string) (string, error) {
 	out, err := ctl(ctx, "show", "-p", "NRestarts", "--value", unit)
 	return strings.TrimSpace(out), err
 }
+
+// Job is whether a unit file is a job: a oneshot (Type=oneshot) that does not stay active (no RemainAfterExit=yes) and
+// has no [Install], so a timer starts it, not boot. Kubernetes splits the same way, a Deployment from a CronJob: a
+// change to a job takes effect at its next run, so nothing restarts it, and it never reads as active, so it is never
+// judged as running.
+func Job(file []byte) bool {
+	section, oneshot := "", false
+	for _, line := range strings.Split(string(file), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			section = line
+			if section == "[Install]" {
+				return false
+			}
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok || section != "[Service]" {
+			continue
+		}
+		switch strings.TrimSpace(k) {
+		case "Type":
+			oneshot = strings.TrimSpace(v) == "oneshot"
+		case "RemainAfterExit":
+			switch strings.ToLower(strings.TrimSpace(v)) {
+			case "yes", "true", "on", "1":
+				return false
+			}
+		}
+	}
+	return oneshot
+}

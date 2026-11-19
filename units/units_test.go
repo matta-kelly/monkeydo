@@ -93,3 +93,18 @@ func TestABuildThatFinishedIsHealthy(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAOneshotWithNoInstallIsAJob(t *testing.T) {
+	cases := map[string]bool{
+		"[Container]\nImage=x\n[Service]\nType=oneshot\n":                                     true,
+		"[Container]\nImage=x\n[Service]\nType=oneshot\nRemainAfterExit=yes\n":                false,
+		"[Container]\nImage=x\n[Service]\nType=oneshot\n[Install]\nWantedBy=default.target\n": false,
+		"[Container]\nImage=x\n[Service]\nRestart=always\n":                                   false,
+		"[Container]\nImage=x\n": false,
+	}
+	for file, want := range cases {
+		if got := Job([]byte(file)); got != want {
+			t.Errorf("Job(%q) = %v, want %v", file, got, want)
+		}
+	}
+}

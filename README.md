@@ -39,6 +39,11 @@ The version before stays as `prev`, so a program still running from it keeps its
 A unit's file comes from the `files` lane (`etc/systemd/system/`) or from a package. List a timer, not the oneshot
 service it fires: a oneshot ends inactive, so it never reads as running.
 
+A job is a container its timer starts, as a CronJob is to a Deployment: a Quadlet with `Type=oneshot`, no
+`RemainAfterExit=yes` and no `[Install]`, beside a timer in `etc/systemd/system/` that `units` lists. A change to the
+job, or to a secret it claims, is written and never starts it: its next run takes the change, and a run that fails
+leaves its unit failed.
+
 A secret file is for a reader that takes a credential only from a file, such as Podman's registry login. Each line of
 `secrets/files` is a sealed name and a path: absolute, written by root, or `~<account>/<path>`, written as that account.
 

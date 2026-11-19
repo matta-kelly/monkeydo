@@ -207,3 +207,20 @@ func TestASecretThatLeftGitIsLeftInPlace(t *testing.T) {
 		t.Fatalf("owned = %v", w.rec.Owned("secrets"))
 	}
 }
+
+func TestAJobThatClaimsASecretIsNotRestarted(t *testing.T) {
+	w := newWorld(t)
+	p := w.node.Path("/etc/containers/systemd/renovate.container")
+	os.MkdirAll(filepath.Dir(p), 0o755)
+	os.WriteFile(p, []byte("[Container]\nImage=x\nSecret=renovate-github,type=env,target=RENOVATE_TOKEN\n[Service]\nType=oneshot\n"), 0o644)
+	w.seal("renovate-github", "sealed:t0ken")
+
+	res := w.tick()
+
+	if !res.OK() || w.box.secrets["renovate-github"] != "t0ken" {
+		t.Fatalf("ok %v, secret %q; log:\n%s", res.OK(), w.box.secrets["renovate-github"], w.log.String())
+	}
+	if _, ok := w.box.started["renovate.service"]; ok {
+		t.Fatal("a job was restarted: it reads the new value at its next run")
+	}
+}

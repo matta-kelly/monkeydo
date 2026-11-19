@@ -9,6 +9,9 @@
 // accepts it. Then each file that moved is written, systemd reloads, and its unit restarts and must settle; one that
 // does not is put back alone. Builds go first, then the containers that use a build that changed, then the rest.
 //
+// A job (units.Job: a oneshot with no [Install]) is a container its timer starts, as a CronJob is to a Deployment: a
+// change writes its file and reloads, and its next run takes the change. The lane never starts or restarts one.
+//
 // In an account's home, every read and write is the account's own (runuser): the account controls its home, so a link
 // there would turn a root write into a write anywhere.
 package containers
@@ -168,7 +171,8 @@ func rank(file string) int {
 }
 
 // Plan proves the render, then names each file to remove, then each to write, builds first and containers last, then
-// each unchanged container that uses a build that changed, and each container never started since boot.
+// each unchanged container that uses a build that changed, and each container never started since boot. A job is
+// written, never started.
 func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]engine.Change, []string, error) {
 	l = l.defaults()
 	sc, err := l.scope(ctx)
@@ -237,11 +241,11 @@ func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]en
 		if moved[name] {
 			// a drop-in restarts its unit itself only when the unit's own file stays: one that moves restarts it after
 			restarts := !dropIn(name) || !moved[base(name)]
-			changes = append(changes, &change{sc: sc, w: l.Window, file: name, keep: true, data: want[name], restarts: restarts})
+			changes = append(changes, &change{sc: sc, w: l.Window, file: name, keep: true, data: want[name], restarts: restarts, job: units.Job(want[base(name)])})
 		}
 	}
 	for _, name := range same {
-		if dropIn(name) || filepath.Ext(name) != ".container" {
+		if dropIn(name) || filepath.Ext(name) != ".container" || units.Job(want[name]) {
 			continue
 		}
 		if uses(want[name], moved) {
@@ -321,11 +325,12 @@ type change struct {
 	keep     bool
 	data     []byte
 	restarts bool // a written drop-in restarts its unit: its file does not move this tick
+	job      bool // its unit is a job, which its timer starts: never restarted here
 }
 
 // restartsUnit is whether writing this path restarts its unit and watches it settle.
 func (c *change) restartsUnit() bool {
-	return c.keep && c.restarts && restarted[filepath.Ext(base(c.file))]
+	return c.keep && c.restarts && !c.job && restarted[filepath.Ext(base(c.file))]
 }
 
 func (c *change) Thing() string { return c.sc.path(c.file) }
@@ -350,7 +355,7 @@ func (c *change) Fix(ctx context.Context) (engine.Undo, error) {
 			if err := c.reload(ctx); err != nil {
 				return err
 			}
-			if restarted[filepath.Ext(base(c.file))] && (!dropIn(c.file) || c.restarts) {
+			if restarted[filepath.Ext(base(c.file))] && (!dropIn(c.file) || c.restarts) && !c.job {
 				_, err := c.sc.ctl()(ctx, "restart", u)
 				return err
 			}
