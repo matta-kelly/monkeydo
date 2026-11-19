@@ -102,26 +102,57 @@ func TestAnAccountsAppRunsFromItsReleaseBesideItsDropInsInTheAccountsScope(t *te
 }
 
 func TestANewReleaseOrDropInOfAnAccountsAppRestartsItsUnit(t *testing.T) {
-	cases := map[string]func(w *acctWorld){
-		"a new release": func(w *acctWorld) {
-			w.release("shop", "shop.container", strings.Replace(acctAppFile, "sha-1", "sha-2", 1))
+	sha2 := strings.Replace(acctAppFile, "sha-1", "sha-2", 1)
+	drop2 := acctAppDrop + "Environment=SHOP=1\n"
+	cases := map[string]struct {
+		change         func(w *acctWorld)
+		run, dropInNow string
+	}{
+		"a new release": {
+			change:    func(w *acctWorld) { w.release("shop", "shop.container", sha2) },
+			run:       sha2,
+			dropInNow: acctAppDrop,
 		},
-		"a new drop-in": func(w *acctWorld) {
-			w.git("users/assembly/apps/shop/shop.container.d/node.conf", acctAppDrop+"Environment=SHOP=1\n")
+		"a new drop-in": {
+			change:    func(w *acctWorld) { w.git("users/assembly/apps/shop/shop.container.d/node.conf", drop2) },
+			run:       acctAppFile,
+			dropInNow: drop2,
+		},
+		// both together: the drop-in must not restart the unit on its own, or the unit runs on the new drop-in with
+		// the old release in between. One restart, after both files are written.
+		"a new release and a new drop-in together": {
+			change: func(w *acctWorld) {
+				w.release("shop", "shop.container", sha2)
+				w.git("users/assembly/apps/shop/shop.container.d/node.conf", drop2)
+			},
+			run:       sha2,
+			dropInNow: drop2,
 		},
 	}
-	for name, change := range cases {
+	for name, c := range cases {
 		w := accountAppWorld(t)
 		if res := w.appTick("assembly"); !res.OK() {
 			t.Fatalf("%s: the first tick did not hold", name)
 		}
 		w.box.restarted = nil
-		change(w)
+		c.change(w)
 
 		res := w.appTick("assembly")
 
-		if !res.OK() || !contains(w.box.restarted, "shop.service") {
-			t.Fatalf("%s: ok %v, restarted %v", name, res.OK(), w.box.restarted)
+		restarts := 0
+		for _, u := range w.box.restarted {
+			if u == "shop.service" {
+				restarts++
+			}
+		}
+		if !res.OK() || restarts != 1 {
+			t.Fatalf("%s: ok %v, shop.service restarts %d %v", name, res.OK(), restarts, w.box.restarted)
+		}
+		if run, _ := w.at("assembly", "shop.container"); run != c.run {
+			t.Fatalf("%s: the run file is %q, not the new one", name, run)
+		}
+		if drop, _ := w.at("assembly", "shop.container.d/node.conf"); drop != c.dropInNow {
+			t.Fatalf("%s: the drop-in is %q, not the new one", name, drop)
 		}
 		if contains(w.box.restarted, "assembly.service") {
 			t.Fatalf("%s: the account's own unit restarted too", name)
