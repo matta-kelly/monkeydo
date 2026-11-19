@@ -163,3 +163,27 @@ func TestCheckProvesEachRenderWithTheGeneratorItIsGiven(t *testing.T) {
 		t.Fatalf("generator calls %q", calls)
 	}
 }
+
+func TestCheckTakesAnAccountAppAsItTakesASystemApp(t *testing.T) {
+	checkout, _, _ := setup(t, "dazoo/x.conf")
+	write := func(rel, data string) {
+		p := filepath.Join(checkout, "nodes", "mutable", "n", rel)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte(data), 0o644)
+	}
+	write("web.container", "[Container]\nImage=x\n")
+	write("users/assembly/assembly.container", "[Container]\nImage=a\n")
+	write("users/assembly/apps/shop/shop.container.d/node.conf", "[Container]\nNetwork=data.network\n")
+	write("releases", "shop sha-1 https://example.test/shop.tgz sha256:"+strings.Repeat("0", 64)+"\n")
+
+	code, out := call("check", "--checkout", checkout, "--node", "mutable/n")
+	if code != 0 || !strings.Contains(out, "apps: 1 ok") {
+		t.Fatalf("a good account app: exit %d, apps ok %v", code, strings.Contains(out, "apps: 1 ok"))
+	}
+
+	// the same break a system app is refused for: a drop-in for a file the release lacks
+	os.WriteFile(filepath.Join(checkout, "nodes", "mutable", "n", "users/assembly/apps/shop/gone.container.d/node.conf"), []byte("[Container]\nNetwork=data.network\n"), 0o644)
+	if code, out := call("check", "--checkout", checkout, "--node", "mutable/n"); code != 1 || !strings.Contains(out, "apps:") {
+		t.Fatalf("a bad account app: exit %d, refused by the apps lane %v", code, strings.Contains(out, "apps:"))
+	}
+}

@@ -53,7 +53,7 @@ func TestAnAppsRunFilesAndDropInsAreWrittenAndItsUnitRestarted(t *testing.T) {
 	}
 }
 
-func TestAnAppIsRefusedBeforeAnythingChanges(t *testing.T) {
+func TestASystemAppIsRefusedBeforeAnythingChanges(t *testing.T) {
 	cases := map[string]func(w *world){
 		"a container with no drop-in":  func(w *world) { w.release("shop", "cart.container", appFile) },
 		"its own file sets UserNS":     func(w *world) { w.release("shop", "shop.container", appFile+"UserNS=host\n") },
@@ -133,6 +133,25 @@ func TestAnAppThatLeavesGitIsStoppedAndRemovedWithItsDropIns(t *testing.T) {
 	d := err == nil
 	if !res.OK() || f || d || !contains(w.sd.stopped, "shop.service") {
 		t.Fatalf("ok %v, file %v, drop-in folder %v, stopped %v; log:\n%s", res.OK(), f, d, w.sd.stopped, w.log.String())
+	}
+}
+
+func TestTheSystemsAppsAndAnAccountsAppRunInTheirOwnScopes(t *testing.T) {
+	w := appWorld(t)
+	// the same app, in an account's git: the system's tick must not see it, and an account's must see only its own
+	w.git("users/assembly/apps/other/other.container.d/node.conf", appDrop)
+	w.release("other", "other.container", appFile)
+
+	res := w.tick()
+
+	if file, ok := w.onBox("shop.container"); !res.OK() || !ok || file != appFile {
+		t.Fatalf("the system's own app: ok %v, %v %q; log:\n%s", res.OK(), ok, file, w.log.String())
+	}
+	if _, ok := w.onBox("other.container"); ok {
+		t.Fatal("an account's app went into the system's folder")
+	}
+	if n, err := CheckApps(engine.Source{Checkout: w.checkout, Node: "mutable/n"}); n != 1 || err != nil {
+		t.Fatalf("check saw %d apps of the system's, %v; want the one in apps/", n, err)
 	}
 }
 

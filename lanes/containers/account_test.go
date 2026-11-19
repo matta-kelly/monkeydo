@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -16,7 +18,7 @@ import (
 
 const home = "/home/assembly"
 
-// acctBox stands in for one account: getent, runuser on files under the fake root, and the account's systemd.
+// acctBox stands in for the node's accounts: getent, runuser on files under the fake root, and the account's systemd.
 type acctBox struct {
 	n         *node.Fake
 	exists    bool
@@ -29,10 +31,7 @@ func (b *acctBox) do(line string, stdin []byte) (string, error, bool) {
 	f := strings.Fields(line)
 	switch {
 	case f[0] == "getent":
-		if b.exists {
-			return "assembly:x:1002:1002::" + home + ":/usr/sbin/nologin", nil, true
-		}
-		return "", errors.New("exit status 2"), true
+		return b.getUser(f[2])
 	case f[0] == "runuser":
 		if f[1] != "-u" || f[2] != "assembly" || f[3] != "--" {
 			return "", errors.New("runuser as someone else"), true
@@ -71,7 +70,7 @@ func (b *acctBox) do(line string, stdin []byte) (string, error, bool) {
 	return "", nil, false
 }
 
-// asAccount does what a command run as the account would, on files under the fake root.
+// asAccount does what a command run as an account would, on files under the fake root.
 func (b *acctBox) asAccount(cmd []string, stdin []byte) (string, error, bool) {
 	p := func(s string) string { return b.n.Path(s) }
 	switch cmd[0] {
@@ -85,14 +84,10 @@ func (b *acctBox) asAccount(cmd []string, stdin []byte) (string, error, bool) {
 		data, err := os.ReadFile(p(cmd[1]))
 		return string(data), err, true
 	case "find":
-		entries, _ := os.ReadDir(p(cmd[1]))
-		var names []string
-		for _, e := range entries {
-			if !e.IsDir() {
-				names = append(names, e.Name())
-			}
-		}
-		return strings.Join(names, "\n"), nil, true
+		// the files under the folder, as paths from it, sorted: the same shape the system's list reads, drop-ins
+		// at <file>.<kind>.d/<name>.conf
+		found, ferr := b.filesUnder(p(cmd[1]))
+		return found, ferr, true
 	case "mkdir":
 		return "", os.MkdirAll(p(cmd[2]), 0o755), true
 	case "sh":
@@ -102,6 +97,31 @@ func (b *acctBox) asAccount(cmd []string, stdin []byte) (string, error, bool) {
 		return "", nil, true
 	}
 	return "", errors.New("unexpected: " + strings.Join(cmd, " ")), true
+}
+
+// filesUnder lists every regular file under dir, as its path from dir, sorted: find's answer for the lane's list of
+// an account's folder, at any depth, so a drop-in's file is listed as <file>.<kind>.d/<name>.conf.
+func (b *acctBox) filesUnder(dir string) (string, error) {
+	var out []string
+	err := filepath.WalkDir(dir, func(pth string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, rerr := filepath.Rel(dir, pth)
+		if rerr != nil {
+			return rerr
+		}
+		out = append(out, rel)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	sort.Strings(out)
+	return strings.Join(out, "\n"), nil
 }
 
 type acctWorld struct {
