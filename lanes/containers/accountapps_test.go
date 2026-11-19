@@ -192,6 +192,30 @@ func TestANewReleaseOfAnAccountsAppThatDoesNotSettleIsPutBackAlone(t *testing.T)
 	}
 }
 
+func TestAnAccountAppWithADropInForAFileItsReleaseLacksIsRefused(t *testing.T) {
+	w := accountAppWorld(t)
+	if res := w.appTick("assembly"); !res.OK() {
+		t.Fatalf("the first tick did not hold")
+	}
+	before, ok := w.at("assembly", "shop.container")
+	if !ok {
+		t.Fatal("the app did not land first")
+	}
+	// the drop-in is for gone.container, which the release does not have: the app is refused, so the tick changes
+	// nothing of it, and the file it already runs stays as it was
+	w.git("users/assembly/apps/shop/gone.container.d/node.conf", acctAppDrop)
+
+	res := w.appTick("assembly")
+
+	after, still := w.at("assembly", "shop.container")
+	if res.OK() || !still || after != before {
+		t.Fatalf("ok %v, run %v %q, was %q", res.OK(), still, after, before)
+	}
+	if _, there := w.at("assembly", "gone.container.d/node.conf"); there {
+		t.Fatal("the drop-in for a file the release lacks was written")
+	}
+}
+
 func TestAnAppThatLeavesAnAccountsGitIsStoppedAndRemovedFromIt(t *testing.T) {
 	w := accountAppWorld(t)
 	w.appTick("assembly")
