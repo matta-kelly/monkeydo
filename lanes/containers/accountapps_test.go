@@ -169,14 +169,11 @@ func TestCheckRefusesAnAccountsAppForWhatASystemAppsCheckRefuses(t *testing.T) {
 		"no pin in releases": func(w *acctWorld) {
 			os.Remove(w.checkout + "/nodes/mutable/n/releases")
 		},
-		"its own file sets UserNS": func(w *acctWorld) {
-			w.release("shop", "shop.container", acctAppFile+"UserNS=host\n")
-		},
-		"a drop-in for a file the release lacks": func(w *acctWorld) {
-			w.git("users/assembly/apps/shop/gone.container.d/node.conf", acctAppDrop)
-		},
 		"something in its folder that is not a drop-in": func(w *acctWorld) {
 			w.git("users/assembly/apps/shop/notes.txt", "x\n")
+		},
+		"a drop-in folder that is not <file>.<kind>.d": func(w *acctWorld) {
+			w.git("users/assembly/apps/shop/shop.container.d/node.txt", "[Container]\n")
 		},
 	}
 	for name, setup := range cases {

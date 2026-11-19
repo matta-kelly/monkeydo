@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 
@@ -70,7 +68,8 @@ func (b *acctBox) do(line string, stdin []byte) (string, error, bool) {
 	return "", nil, false
 }
 
-// asAccount does what a command run as an account would, on files under the fake root.
+// asAccount does what a command run as an account would, on files under the fake root: each answer is the real
+// command's, so a folder the lane never made is a write that fails, as it would on the node.
 func (b *acctBox) asAccount(cmd []string, stdin []byte) (string, error, bool) {
 	p := func(s string) string { return b.n.Path(s) }
 	switch cmd[0] {
@@ -84,44 +83,49 @@ func (b *acctBox) asAccount(cmd []string, stdin []byte) (string, error, bool) {
 		data, err := os.ReadFile(p(cmd[1]))
 		return string(data), err, true
 	case "find":
-		// the files under the folder, as paths from it, sorted: the same shape the system's list reads, drop-ins
-		// at <file>.<kind>.d/<name>.conf
-		found, ferr := b.filesUnder(p(cmd[1]))
-		return found, ferr, true
+		// find <dir> -mindepth 1 -maxdepth 1 -printf "%f\t%y\n": one level, a name and t for a file or d for a folder
+		entries, err := os.ReadDir(p(cmd[1]))
+		if err != nil {
+			return "", errors.New("exit status 1"), true
+		}
+		var lines []string
+		for _, e := range entries {
+			kind := "f"
+			if e.IsDir() {
+				kind = "d"
+			}
+			lines = append(lines, e.Name()+"\t"+kind)
+		}
+		return strings.Join(lines, "\n"), nil, true
+	case "ls":
+		// ls -1 <dir>: the names in it, one a line
+		entries, err := os.ReadDir(p(cmd[2]))
+		if err != nil {
+			return "", errors.New("exit status 2"), true
+		}
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		return strings.Join(names, "\n"), nil, true
 	case "mkdir":
+		if cmd[1] != "-p" {
+			return "", errors.New("mkdir: only -p is expected here"), true
+		}
 		return "", os.MkdirAll(p(cmd[2]), 0o755), true
 	case "sh":
-		return "", os.WriteFile(p(cmd[len(cmd)-1]), stdin, 0o644), true
+		// cat >"$1.monkeydo" && mv -f "$1.monkeydo" "$1": a shell writes beside the file and moves it over, so a
+		// folder the lane never made is no such file or directory, exactly as on the node
+		target := p(cmd[len(cmd)-1])
+		if err := os.WriteFile(target+".monkeydo", stdin, 0o644); err != nil {
+			return "", err, true
+		}
+		return "", os.Rename(target+".monkeydo", target), true
 	case "rm":
 		os.Remove(p(cmd[2]))
 		return "", nil, true
 	}
 	return "", errors.New("unexpected: " + strings.Join(cmd, " ")), true
-}
-
-// filesUnder lists every regular file under dir, as its path from dir, sorted: find's answer for the lane's list of
-// an account's folder, at any depth, so a drop-in's file is listed as <file>.<kind>.d/<name>.conf.
-func (b *acctBox) filesUnder(dir string) (string, error) {
-	var out []string
-	err := filepath.WalkDir(dir, func(pth string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		rel, rerr := filepath.Rel(dir, pth)
-		if rerr != nil {
-			return rerr
-		}
-		out = append(out, rel)
-		return nil
-	})
-	if err != nil {
-		return "", err
-	}
-	sort.Strings(out)
-	return strings.Join(out, "\n"), nil
 }
 
 type acctWorld struct {

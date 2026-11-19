@@ -3,7 +3,9 @@ package containers
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -48,7 +50,28 @@ func (s system) path(file string) string { return filepath.Join(s.dir, file) }
 func (s system) ctl() units.Ctl          { return units.System(s.n) }
 
 func (s system) list(context.Context) ([]string, error) {
-	entries, err := os.ReadDir(s.n.Path(s.dir))
+	return listed(s.dir, func(dir string) ([]fs.DirEntry, error) {
+		if dir != s.dir {
+			return subdirs(s.n.Path(dir))
+		}
+		return os.ReadDir(s.n.Path(dir))
+	})
+}
+
+// subdirs are a folder's entries, as find lists them: the lane lists it deeper than it reads, and find is what a node
+// is sure to have.
+func subdirs(dir string) ([]fs.DirEntry, error) {
+	out, err := exec.Command("find", dir, "-mindepth", "1", "-maxdepth", "1", "-printf", "%f\t%y\n").Output()
+	if err != nil {
+		return nil, fmt.Errorf("find %s: %v", dir, err)
+	}
+	return entries(string(out)), nil
+}
+
+// listed is a folder's files, a drop-in folder's included, as paths from it: a file by its name, a drop-in by
+// <file>.<kind>.d/<name>.conf. A folder that is not there has no files.
+func listed(dir string, read func(string) ([]fs.DirEntry, error)) ([]string, error) {
+	entries, err := read(dir)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -62,7 +85,7 @@ func (s system) list(context.Context) ([]string, error) {
 			continue
 		}
 		// a drop-in folder's files are the lane's too: the node's side of an app
-		drops, err := os.ReadDir(s.n.Path(filepath.Join(s.dir, e.Name())))
+		drops, err := read(filepath.Join(dir, e.Name()))
 		if err != nil {
 			return nil, err
 		}
@@ -118,18 +141,57 @@ func (a account) list(ctx context.Context) ([]string, error) {
 	if _, err := a.as(ctx, nil, "test", "-d", a.dir); err != nil {
 		return nil, nil
 	}
-	out, err := a.as(ctx, nil, "find", a.dir, "-mindepth", "1", "-maxdepth", "1", "-type", "f", "-printf", "%f\n")
-	if err != nil {
-		return nil, err
-	}
-	var files []string
-	for _, f := range strings.Split(out, "\n") {
-		if f != "" {
-			files = append(files, f)
+	// find cannot tell a drop-in folder's file from a file of the account's, so the folders are read one at a time
+	return listed(a.dir, func(dir string) ([]fs.DirEntry, error) {
+		if dir != a.dir {
+			out, err := a.as(ctx, nil, "ls", "-1", dir)
+			if err != nil {
+				return nil, err
+			}
+			return names(out), nil
+		}
+		out, err := a.as(ctx, nil, "find", a.dir, "-mindepth", "1", "-maxdepth", "1", "-printf", "%f\t%y\n")
+		if err != nil {
+			return nil, err
+		}
+		return entries(out), nil
+	})
+}
+
+// entries is find's answer, one file or folder a line: its name, a tab, and its type.
+func entries(out string) []fs.DirEntry {
+	var dirs []fs.DirEntry
+	for _, line := range strings.Split(out, "\n") {
+		name, kind, ok := strings.Cut(line, "\t")
+		if ok && name != "" {
+			dirs = append(dirs, named{name: name, dir: kind == "d"})
 		}
 	}
-	sort.Strings(files)
-	return files, nil
+	return dirs
+}
+
+// names is ls's answer, a drop-in folder's files: one name a line, none of them a folder.
+func names(out string) []fs.DirEntry {
+	var dirs []fs.DirEntry
+	for _, line := range strings.Split(out, "\n") {
+		if line != "" {
+			dirs = append(dirs, named{name: line})
+		}
+	}
+	return dirs
+}
+
+// named is a name a listing answered, and whether it is a folder.
+type named struct {
+	name string
+	dir  bool
+}
+
+func (n named) Name() string      { return n.name }
+func (n named) IsDir() bool       { return n.dir }
+func (n named) Type() fs.FileMode { return 0 }
+func (n named) Info() (fs.FileInfo, error) {
+	return nil, fmt.Errorf("%s: a listing has no file info", n.name)
 }
 
 func (a account) read(ctx context.Context, file string) ([]byte, bool, error) {

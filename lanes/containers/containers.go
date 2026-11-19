@@ -1,8 +1,8 @@
 // Package containers is the lane for a node's Quadlets: the .container, .network, .volume, .image, .pod, .kube and
 // .build files git has for one scope, rendered with the node's DOMAIN. The system's come from nodes/<node>/ (users/
-// and apps/ aside) into /etc/containers/systemd; an account's from nodes/<node>/users/<account>/ into the account's
-// ~/.config/containers/systemd, run by its own systemd. The system's folder also has each app's run files and the
-// node's drop-ins for them (apps.go). The lane owns the folder whole: a file there that git lacks is stopped and
+// and users/ aside) into /etc/containers/systemd; an account's from nodes/<node>/users/<account>/ (apps/ aside) into
+// the account's ~/.config/containers/systemd, run by its own systemd. Either folder also has its apps' run files and
+// the node's drop-ins for them (apps.go). The lane owns the folder whole: a file there that git lacks is stopped and
 // removed.
 //
 // Before anything changes, the render is proved: no placeholder left, something rendered, and Podman's generator
@@ -102,7 +102,11 @@ func Render(src engine.Source, account string) (map[string][]byte, error) {
 			return err
 		}
 		if d.IsDir() {
-			if account == "" && (p == filepath.Join(nodeDir, "users") || p == filepath.Join(nodeDir, "apps")) {
+			if account == "" && p == filepath.Join(nodeDir, "users") {
+				return fs.SkipDir
+			}
+			// an app's folder is its drop-ins, which only renderApps reads
+			if p == filepath.Join(dir, "apps") {
 				return fs.SkipDir
 			}
 			return nil
@@ -178,10 +182,8 @@ func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]en
 	if err != nil {
 		return nil, nil, err
 	}
-	if l.Account == "" {
-		if err := renderApps(l.Node, src, want); err != nil {
-			return nil, nil, err
-		}
+	if err := renderApps(l.Node, src, l.Account, want); err != nil {
+		return nil, nil, err
 	}
 	if len(want) == 0 {
 		return nil, nil, fmt.Errorf("rendered nothing for %s: applying it would remove every unit", l.Name())

@@ -141,6 +141,7 @@ func TestTheSystemsAppsAndAnAccountsAppRunInTheirOwnScopes(t *testing.T) {
 	// the same app, in an account's git: the system's tick must not see it, and an account's must see only its own
 	w.git("users/assembly/apps/other/other.container.d/node.conf", appDrop)
 	w.release("other", "other.container", appFile)
+	w.git("releases", pin+"other  sha-1  ghcr.io/example/other-quadlets  sha256:"+strings.Repeat("0", 64)+"\n")
 
 	res := w.tick()
 
@@ -149,9 +150,6 @@ func TestTheSystemsAppsAndAnAccountsAppRunInTheirOwnScopes(t *testing.T) {
 	}
 	if _, ok := w.onBox("other.container"); ok {
 		t.Fatal("an account's app went into the system's folder")
-	}
-	if n, err := CheckApps(engine.Source{Checkout: w.checkout, Node: "mutable/n"}); n != 1 || err != nil {
-		t.Fatalf("check saw %d apps of the system's, %v; want the one in apps/", n, err)
 	}
 }
 

@@ -181,8 +181,8 @@ func TestCheckTakesAnAccountAppAsItTakesASystemApp(t *testing.T) {
 		t.Fatalf("a good account app: exit %d, apps ok %v", code, strings.Contains(out, "apps: 1 ok"))
 	}
 
-	// the same break a system app is refused for: a drop-in for a file the release lacks
-	os.WriteFile(filepath.Join(checkout, "nodes", "mutable", "n", "users/assembly/apps/shop/gone.container.d/node.conf"), []byte("[Container]\nNetwork=data.network\n"), 0o644)
+	// the same break a system app is refused for: something in its folder that is not a drop-in
+	os.WriteFile(filepath.Join(checkout, "nodes", "mutable", "n", "users/assembly/apps/shop/notes.txt"), []byte("x\n"), 0o644)
 	if code, out := call("check", "--checkout", checkout, "--node", "mutable/n"); code != 1 || !strings.Contains(out, "apps:") {
 		t.Fatalf("a bad account app: exit %d, refused by the apps lane %v", code, strings.Contains(out, "apps:"))
 	}

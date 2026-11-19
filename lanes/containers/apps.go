@@ -15,36 +15,61 @@ import (
 )
 
 // An app is a release whose run files are Quadlets: its repo ships them, and the node adds its own side. git has the
-// node's side in nodes/<node>/apps/<app>/, one Quadlet drop-in folder for each of the app's files
-// (<file>.container.d/<name>.conf). The system's lane puts the release's files from /usr/local/lib/<app>/current and
-// git's drop-ins side by side in /etc/containers/systemd, so a new release or a new drop-in is a change like any other.
+// node's side beside the scope's own Quadlets, one Quadlet drop-in folder for each of the app's files
+// (<file>.container.d/<name>.conf): nodes/<node>/apps/<app>/ for the system, nodes/<node>/users/<account>/apps/<app>/
+// for an account. The scope's lane puts the release's files from /usr/local/lib/<app>/current and git's drop-ins side
+// by side in the scope's folder, so a new release or a new drop-in is a change like any other.
 //
-// The node keeps each app in a user namespace of its own: each of the app's containers has a drop-in that sets
-// UserNS=auto, and an app's own file that sets UserNS is refused. dazoo's check proves git's side; the lane proves the
-// release's side before it writes anything.
+// The system keeps each app in a user namespace of its own: each of the app's containers has a drop-in that sets
+// UserNS=auto, and an app's own file that sets UserNS is refused. That is the system's rule alone: rootless Podman
+// takes an account's own subordinate IDs, so an account's app runs as the account and needs no drop-in. dazoo's check
+// proves git's side; the lane proves the release's side before it writes anything.
 
 // releaseDir is where the releases lane keeps a release's current version.
 const releaseDir = "/usr/local/lib"
 
 var userns = regexp.MustCompile(`^\s*UserNS\s*=\s*(.*?)\s*$`)
 
-// Apps are the apps with a node's side in git: the folders under nodes/<node>/apps/.
-func Apps(src engine.Source) []string {
-	entries, _ := os.ReadDir(filepath.Join(src.Checkout, "nodes", src.Node, "apps"))
-	var out []string
+// app is one app of one scope: its name, and whose folder its files go in. The zero account is the system's.
+type app struct {
+	name    string
+	account string
+}
+
+// apps are the apps of a scope with a node's side in git: the folders under its apps/ folder.
+func apps(src engine.Source, account string) []app {
+	entries, _ := os.ReadDir(filepath.Join(src.Checkout, "nodes", src.Node, appsDir(account)))
+	var out []app
 	for _, e := range entries {
 		if e.IsDir() {
-			out = append(out, e.Name())
+			out = append(out, app{name: e.Name(), account: account})
 		}
 	}
-	sort.Strings(out)
 	return out
 }
 
-// DropIns is an app's side in git, by its path in the system's folder (<file>.d/<name>.conf). It refuses anything else
-// in the app's folder, and a container drop-in folder that does not set UserNS=auto.
-func DropIns(src engine.Source, app string) (map[string][]byte, error) {
-	dir := filepath.Join(src.Checkout, "nodes", src.Node, "apps", app)
+// Apps are the system's apps with a node's side in git: the folders under nodes/<node>/apps/.
+func Apps(src engine.Source) []app { return apps(src, "") }
+
+// appsDir is where a scope's apps are in git, from the node's folder.
+func appsDir(account string) string {
+	if account == "" {
+		return "apps"
+	}
+	return filepath.Join("users", account, "apps")
+}
+
+func (a app) String() string {
+	if a.account == "" {
+		return a.name
+	}
+	return a.name + " of " + a.account
+}
+
+// DropIns is the app's side in git, by its path in the scope's folder (<file>.d/<name>.conf). It refuses anything
+// else in the app's folder, and, for the system's app, a container drop-in folder that does not set UserNS=auto.
+func (a app) DropIns(src engine.Source) (map[string][]byte, error) {
+	dir := filepath.Join(src.Checkout, "nodes", src.Node, appsDir(a.account), a.name)
 	out := map[string][]byte{}
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -66,26 +91,30 @@ func DropIns(src engine.Source, app string) (map[string][]byte, error) {
 			out[parts[0]+"/"+parts[1]] = data
 			return nil
 		}
-		return fmt.Errorf("app %s: %s is not <file>.<kind>.d/<name>.conf, a Quadlet drop-in", app, rel)
+		return fmt.Errorf("app %s: %s is not <file>.<kind>.d/<name>.conf, a Quadlet drop-in", a, rel)
 	})
 	if err != nil {
 		return nil, err
 	}
+	if a.account != "" {
+		return out, nil
+	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("app %s: no drop-in, so nothing keeps it in its own user namespace", app)
+		return nil, fmt.Errorf("app %s: no drop-in, so nothing keeps it in its own user namespace", a)
 	}
 	for _, file := range dropInFiles(out) {
 		if filepath.Ext(file) != ".container" {
 			continue
 		}
 		if v := lastUserNS(out, file); v != "auto" {
-			return nil, fmt.Errorf("app %s: %s.d does not set UserNS=auto (it sets %q), so the app would share the node's user namespace", app, file, v)
+			return nil, fmt.Errorf("app %s: %s.d does not set UserNS=auto (it sets %q), so the app would share the node's user namespace", a, file, v)
 		}
 	}
 	return out, nil
 }
 
-// CheckApps proves git's side of each app: a pin in releases, and drop-ins that keep it in its own user namespace.
+// CheckApps proves git's side of each app, the system's and every account's: a pin in releases, and, for the system's,
+// drop-ins that keep it in its own user namespace.
 func CheckApps(src engine.Source) (int, error) {
 	rels, err := releases.Read(src)
 	if err != nil {
@@ -95,12 +124,16 @@ func CheckApps(src engine.Source) (int, error) {
 	for _, r := range rels {
 		pinned[r.Name] = true
 	}
+	all := Apps(src)
+	for _, account := range Accounts(src) {
+		all = append(all, apps(src, account)...)
+	}
 	n := 0
-	for _, app := range Apps(src) {
-		if !pinned[app] {
-			return n, fmt.Errorf("app %s has no pin in releases, so the node has no run files for it", app)
+	for _, a := range all {
+		if !pinned[a.name] {
+			return n, fmt.Errorf("app %s has no pin in releases, so the node has no run files for it", a)
 		}
-		if _, err := DropIns(src, app); err != nil {
+		if _, err := a.DropIns(src); err != nil {
 			return n, err
 		}
 		n++
@@ -108,19 +141,20 @@ func CheckApps(src engine.Source) (int, error) {
 	return n, nil
 }
 
-// renderApps adds each app's run files from its current release, and git's drop-ins, to the system's render. It
-// refuses an app whose release is not on the node, a file of its that sets UserNS, a container of its with no drop-in,
-// a drop-in for a file the release lacks, and a file named as one of dazoo's.
-func renderApps(n node.Node, src engine.Source, want map[string][]byte) error {
-	for _, app := range Apps(src) {
-		drops, err := DropIns(src, app)
+// renderApps adds each app's run files from its current release, and git's drop-ins, to want, the render of the
+// system's folder or of a's account's. It refuses an app whose release is not on the node, a file of the system's that
+// sets UserNS, a container of the system's with no drop-in, a drop-in for a file the release lacks, and, for the
+// system's, a file named as one of dazoo's.
+func renderApps(n node.Node, src engine.Source, account string, want map[string][]byte) error {
+	for _, a := range apps(src, account) {
+		drops, err := a.DropIns(src)
 		if err != nil {
 			return err
 		}
-		cur := filepath.Join(releaseDir, app, "current")
+		cur := filepath.Join(releaseDir, a.name, "current")
 		entries, err := os.ReadDir(n.Path(cur))
 		if err != nil {
-			return fmt.Errorf("app %s: its release is not on the node (%s): %v", app, cur, err)
+			return fmt.Errorf("app %s: its release is not on the node (%s): %v", a, cur, err)
 		}
 		files := map[string]bool{}
 		for _, e := range entries {
@@ -129,31 +163,36 @@ func renderApps(n node.Node, src engine.Source, want map[string][]byte) error {
 			}
 			f, ok, err := node.Read(n, filepath.Join(cur, e.Name()))
 			if err != nil || !ok {
-				return fmt.Errorf("app %s: %s: %v", app, e.Name(), err)
+				return fmt.Errorf("app %s: %s: %v", a, e.Name(), err)
 			}
 			for _, line := range strings.Split(string(f.Data), "\n") {
-				if userns.MatchString(line) {
-					return fmt.Errorf("app %s: %s sets UserNS, which is the node's to set", app, e.Name())
+				if a.account == "" && userns.MatchString(line) {
+					return fmt.Errorf("app %s: %s sets UserNS, which is the node's to set", a, e.Name())
 				}
 			}
 			if _, dup := want[e.Name()]; dup {
-				return fmt.Errorf("app %s: %s is also one of dazoo's files", app, e.Name())
+				if a.account != "" {
+					return fmt.Errorf("app %s: %s is also one of %s's own Quadlets", a, e.Name(), a.account)
+				}
+				return fmt.Errorf("app %s: %s is also one of dazoo's files", a, e.Name())
 			}
 			want[e.Name()] = f.Data
 			files[e.Name()] = true
 		}
-		for name := range files {
-			if filepath.Ext(name) == ".container" && lastUserNS(drops, name) == "" {
-				return fmt.Errorf("app %s: %s has no drop-in in git, so nothing keeps it in its own user namespace", app, name)
+		if a.account == "" {
+			for name := range files {
+				if filepath.Ext(name) == ".container" && lastUserNS(drops, name) == "" {
+					return fmt.Errorf("app %s: %s has no drop-in in git, so nothing keeps it in its own user namespace", a, name)
+				}
 			}
 		}
 		for path, data := range drops {
 			file := strings.TrimSuffix(strings.SplitN(path, "/", 2)[0], ".d")
 			if !files[file] {
-				return fmt.Errorf("app %s: a drop-in for %s, which its release does not have", app, file)
+				return fmt.Errorf("app %s: a drop-in for %s, which its release does not have", a, file)
 			}
 			if _, dup := want[path]; dup {
-				return fmt.Errorf("app %s: two drop-ins at %s", app, path)
+				return fmt.Errorf("app %s: two drop-ins at %s", a, path)
 			}
 			want[path] = data
 		}
