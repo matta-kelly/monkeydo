@@ -61,6 +61,23 @@ func (w *acctWorld) at(account, file string) (string, bool) {
 	return string(data), err == nil
 }
 
+func TestAnAccountsAppWhoseOwnFileSetsUserNSStillRuns(t *testing.T) {
+	w := accountAppWorld(t)
+	// the rule that an app's own file may not set UserNS is the system's alone: a system app is refused for it, an
+	// account's runs, since a rootless container's UserNS is the account's own to set
+	w.release("shop", "shop.container", acctAppFile+"UserNS=host\n")
+
+	res := w.appTick("assembly")
+
+	run, runOK := w.at("assembly", "shop.container")
+	if !res.OK() || !runOK || run != acctAppFile+"UserNS=host\n" {
+		t.Fatalf("ok %v, run %v %q", res.OK(), runOK, run)
+	}
+	if !contains(w.box.restarted, "shop.service") {
+		t.Fatalf("the account's systemd did not restart shop: %v", w.box.restarted)
+	}
+}
+
 func TestAnAccountsAppRunsFromItsReleaseBesideItsDropInsInTheAccountsScope(t *testing.T) {
 	w := accountAppWorld(t)
 

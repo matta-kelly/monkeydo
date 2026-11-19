@@ -69,12 +69,18 @@ func (b *acctBox) do(line string, stdin []byte) (string, error, bool) {
 }
 
 // unitFile is what a unit of the account's is made of: its file and its drop-ins, in name order as Quadlet reads them,
-// so a drop-in that breaks the unit is seen to. A drop-in is <file>.<kind>.d/<name>.conf beside the file.
+// so a drop-in that breaks the unit is seen to. A drop-in is <file>.<kind>.d/<name>.conf beside the file. The unit's
+// name carries its kind (web.service, data-network.service, x-build.service), so each kind names the one file it can be:
+// the kinds are tried in a fixed order, never a map's.
 func (b *acctBox) unitFile(u string) string {
 	dir := b.n.Path(home + "/.config/containers/systemd")
 	name := strings.TrimSuffix(u, ".service")
-	for ext := range kinds {
-		file := name + ext
+	for _, ext := range []string{".container", ".build", ".network", ".volume", ".pod", ".kube", ".image"} {
+		stem, ok := strings.CutSuffix(name, kinds[ext])
+		if !ok {
+			continue
+		}
+		file := stem + ext
 		if _, err := os.Stat(filepath.Join(dir, file)); err != nil {
 			continue
 		}
