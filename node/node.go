@@ -5,6 +5,7 @@ package node
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -81,6 +82,10 @@ func (r Real) RunCmd(ctx context.Context, c Cmd) (string, error) {
 		return text, fmt.Errorf("%s passed its limit of %s", c.line(), limit)
 	}
 	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return text, fmt.Errorf("%w: %s: %s", &Exit{Code: exit.ExitCode()}, c.line(), text)
+		}
 		if c.Quiet {
 			return text, fmt.Errorf("%s: %v", c.line(), err)
 		}
@@ -153,3 +158,11 @@ func Remove(n Node, p string) error {
 	}
 	return err
 }
+
+// Exit is a command that failed with a status of its own: the status as it exited, so a caller can tell one failure
+// from another (getent exits 2 for a name it has no line for, and 1 for a database it could not read).
+type Exit struct {
+	Code int
+}
+
+func (e *Exit) Error() string { return fmt.Sprintf("exit status %d", e.Code) }

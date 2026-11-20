@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -91,24 +92,30 @@ func run(args []string, stdout, stderr io.Writer) int {
 		report("secret files", n, err)
 		n, err = secrets.CheckBao(src)
 		report("openbao secrets", n, err)
+		// each scope renders as its lane would install it: git's Quadlets and its apps' run files and drop-ins.
 		for _, a := range append([]string{""}, containers.Accounts(src)...) {
-			name := "containers"
-			if a != "" {
-				name += "@" + a
-			}
-			quads, err := containers.Render(src, a)
-			if err == nil && len(quads) == 0 {
+			// the root the check reads through is the lane's own, never a node of the process's
+			lane := containers.Lane{Node: node.Real{Root: *root}, Account: a}
+			// what the lane would install, apps included: its refusal is the scope's, and its units are the ones it
+			// writes
+			quads, err := lane.Install(context.Background(), src)
+			if errors.Is(err, containers.NothingToInstall) {
 				err = fmt.Errorf("renders no unit file, which the lane refuses: applying it would remove every unit")
 			}
 			if err == nil && *quadlet != "" {
-				gen, aerr := filepath.Abs(*quadlet)
-				if aerr != nil {
+				// proved where the clause says, and never in place of the one before it
+				if gen, aerr := filepath.Abs(*quadlet); aerr != nil {
 					err = aerr
 				} else {
-					err = containers.Lane{Node: node.Real{Root: "/"}, Account: a, Quadlet: []string{gen}}.Validate(context.Background(), quads)
+					err = lane.Prove(context.Background(), gen, quads)
 				}
 			}
-			report(name, len(quads), err)
+			// the scope's line counts the units it writes; the system's counts its own folder alone, as it always
+			// did, its apps' units being the apps line's to count
+			if a == "" {
+				quads, _ = containers.Render(src, "")
+			}
+			report(lane.Name(), containers.Units(quads), err)
 		}
 		n, err = containers.CheckApps(src)
 		report("apps", n, err)

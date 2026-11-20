@@ -6,8 +6,10 @@
 // removed.
 //
 // Before anything changes, the render is proved: no placeholder left, something rendered, and Podman's generator
-// accepts it. Then each file that moved is written, systemd reloads, and its unit restarts and must settle; one that
-// does not is put back alone. Builds go first, then the containers that use a build that changed, then the rest.
+// accepts it (Validate, with the generator the node has). A check outside the lane proves it with the generator it
+// is given instead (Prove), since that generator is the check's own binary, not a file on the node. Then each file
+// that moved is written, systemd reloads, and its unit restarts and must settle; one that does not is put back
+// alone. Builds go first, then the containers that use a build that changed, then the rest.
 //
 // A job (units.Job: a oneshot with no [Install]) is a container its timer starts, as a CronJob is to a Deployment: a
 // change writes its file and reloads, and its next run takes the change. The lane never starts or restarts one.
@@ -19,6 +21,7 @@ package containers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -170,29 +173,62 @@ func rank(file string) int {
 	return 1
 }
 
-// Plan proves the render, then names each file to remove, then each to write, builds first and containers last, then
-// each unchanged container that uses a build that changed, and each container never started since boot. A job is
-// written, never started.
-func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]engine.Change, []string, error) {
+// NothingToInstall is a scope the lane would empty: it refuses it, since applying it would remove every unit.
+var NothingToInstall = errors.New("renders no unit file: applying it would remove every unit")
+
+// Units is how many units a render makes: a drop-in is part of its unit's file, never a unit of its own.
+func Units(want map[string][]byte) int {
+	units := map[string]bool{}
+	for name := range want {
+		units[unit(name)] = true
+	}
+	return len(units)
+}
+
+// Install is what the lane would install for its scope, by file name: git's Quadlets with $DOMAIN filled in, and each
+// app's run files and drop-ins beside them. It refuses a scope that would install nothing, since applying it would
+// remove every unit. nil is an account not on the node yet, which no tick applies.
+func (l Lane) Install(ctx context.Context, src engine.Source) (map[string][]byte, error) {
+	want, _, err := l.install(ctx, src)
+	return want, err
+}
+
+// install is Install, with the scope it rendered for: nil for an account not on the node yet.
+func (l Lane) install(ctx context.Context, src engine.Source) (map[string][]byte, scope, error) {
 	l = l.defaults()
 	sc, err := l.scope(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
 	if sc == nil {
-		return nil, owned, nil // the account is not on the node yet: a later tick applies it
+		return nil, nil, nil
 	}
 	want, err := Render(src, l.Account)
 	if err != nil {
-		return nil, nil, err
+		return nil, sc, err
 	}
 	if err := renderApps(l.Node, src, l.Account, want); err != nil {
-		return nil, nil, err
+		return nil, sc, err
 	}
 	if len(want) == 0 {
-		return nil, nil, fmt.Errorf("rendered nothing for %s: applying it would remove every unit", l.Name())
+		return nil, sc, fmt.Errorf("%s: %w", l.Name(), NothingToInstall)
 	}
-	if err := l.validate(ctx, want); err != nil {
+	return want, sc, nil
+}
+
+// Plan proves the render, then names each file to remove, then each to write, builds first and containers last, then
+// each unchanged container that uses a build that changed, and each container never started since boot. A job is
+// written, never started.
+func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]engine.Change, []string, error) {
+	l = l.defaults()
+	want, sc, err := l.install(ctx, src)
+	if err != nil {
+		return nil, nil, err
+	}
+	if want == nil {
+		return nil, owned, nil // the account is not on the node yet: a later tick applies it
+	}
+	if err := l.Validate(ctx, want); err != nil {
 		return nil, nil, err
 	}
 
@@ -270,22 +306,34 @@ func uses(container []byte, moved map[string]bool) bool {
 // Validate proves a render with Podman's generator, as the lane does before it changes anything. CI runs it with the
 // generator of the node's Podman version.
 func (l Lane) Validate(ctx context.Context, want map[string][]byte) error {
-	return l.defaults().validate(ctx, want)
+	return validate(ctx, l.Node, l.Quadlet, l.Account != "", want)
 }
 
-// validate runs Podman's generator over the render: it drops a file it cannot read with no error of its own, so its
-// --dryrun is the only proof a file makes a unit.
-func (l Lane) validate(ctx context.Context, want map[string][]byte) error {
+// Prove proves a render with the generator the check is given, never one the lane finds on the node: like Podman's own
+// --dryrun, it runs at a path of the machine the check runs on, not under --root, and reads the node only through --root.
+func (l Lane) Prove(ctx context.Context, gen string, want map[string][]byte) error {
+	return runGenerator(ctx, node.Real{}, gen, l.Account != "", want)
+}
+
+// validate runs the first of the lane's generators there is on the node over want, as the account's render if user, and
+// is an error when none is there to prove it.
+func validate(ctx context.Context, n node.Node, quadlet []string, user bool, want map[string][]byte) error {
 	gen := ""
-	for _, q := range l.Quadlet {
-		if info, err := os.Stat(l.Node.Path(q)); err == nil && !info.IsDir() {
-			gen = q
+	for _, q := range quadlet {
+		if info, err := os.Stat(n.Path(q)); err == nil && !info.IsDir() {
+			gen = n.Path(q)
 			break
 		}
 	}
 	if gen == "" {
 		return fmt.Errorf("no quadlet generator on the node, so the render cannot be proved")
 	}
+	return runGenerator(ctx, n, gen, user, want)
+}
+
+// runGenerator runs gen, a path on n, over want, as the account's render if user: it drops a file it cannot read with
+// no error of its own, so its --dryrun is the only proof a file makes a unit.
+func runGenerator(ctx context.Context, n node.Node, gen string, user bool, want map[string][]byte) error {
 	stage, err := os.MkdirTemp("", "monkeydo-quadlets-")
 	if err != nil {
 		return err
@@ -300,10 +348,10 @@ func (l Lane) validate(ctx context.Context, want map[string][]byte) error {
 		}
 	}
 	args := []string{"--dryrun"}
-	if l.Account != "" {
+	if user {
 		args = []string{"-user", "--dryrun"}
 	}
-	out, err := l.Node.RunCmd(ctx, node.Cmd{Name: l.Node.Path(gen), Args: args, Env: []string{"QUADLET_UNIT_DIRS=" + stage}, StderrOnly: true})
+	out, err := n.RunCmd(ctx, node.Cmd{Name: gen, Args: args, Env: []string{"QUADLET_UNIT_DIRS=" + stage}, StderrOnly: true})
 	if err != nil {
 		return fmt.Errorf("quadlet refused the render: %s", reasons(out))
 	}

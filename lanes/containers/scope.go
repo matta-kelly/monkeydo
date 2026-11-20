@@ -2,6 +2,7 @@ package containers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -29,11 +30,14 @@ func (l Lane) scope(ctx context.Context) (scope, error) {
 	if l.Account == "" {
 		return system{n: l.Node, dir: l.Target}, nil
 	}
-	out, err := l.Node.Run(ctx, "getent", "passwd", l.Account)
-	if err != nil {
-		return nil, nil
+	line, err := passwd(ctx, l.Node, l.Account)
+	if errors.Is(err, errNoAccount) {
+		return nil, nil // the account is not on the node yet: a later tick applies it
 	}
-	fields := strings.Split(strings.TrimSpace(out), ":")
+	if err != nil {
+		return nil, err // the node's passwd could not be read: never taken for an account that is not there
+	}
+	fields := strings.Split(line, ":")
 	if len(fields) < 6 || fields[5] == "" {
 		return nil, fmt.Errorf("%s has no home in its passwd line", l.Account)
 	}
@@ -229,4 +233,38 @@ func (a account) remove(ctx context.Context, file string) error {
 	}
 	_, err := a.as(ctx, nil, "rmdir", dir)
 	return err
+}
+
+// errNoAccount is a name the node's passwd does not have: not an account on the node yet. Any other error from passwd is
+// a passwd that could not be read, which is a fault the caller must raise, never take for an account that is not there.
+var errNoAccount = errors.New("no such account")
+
+// passwd is a name's line in the node's passwd. A node read through a root has its own passwd there, and none is a node
+// with no accounts; a node that is the machine itself, or a fake of one, answers getent.
+func passwd(ctx context.Context, n node.Node, name string) (string, error) {
+	if r, ok := n.(node.Real); ok && r.Root != "" && r.Root != "/" {
+		data, err := os.ReadFile(filepath.Join(r.Root, "etc", "passwd"))
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%s: %w", name, errNoAccount)
+		}
+		if err != nil {
+			return "", err
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if f := strings.Split(line, ":"); len(f) >= 6 && f[0] == name {
+				return line, nil
+			}
+		}
+		return "", fmt.Errorf("%s is not in the node's passwd: %w", name, errNoAccount)
+	}
+	out, err := n.Run(ctx, "getent", "passwd", name)
+	// getent exits 2 for a name it has no line for, and 1 for a database it could not read: only the first is no account
+	var exit *node.Exit
+	if errors.As(err, &exit) && exit.Code == 2 {
+		return "", fmt.Errorf("%s: %w", name, errNoAccount)
+	}
+	if err != nil {
+		return "", err
+	}
+	return out, nil
 }

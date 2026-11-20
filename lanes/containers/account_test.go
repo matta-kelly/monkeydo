@@ -289,3 +289,23 @@ func TestASecondTickOnAnAccountChangesNothing(t *testing.T) {
 		t.Fatalf("ok %v, restarted %v, log:\n%s", res.OK(), w.box.restarted, w.log.String())
 	}
 }
+
+func TestAnAccountsScopeIsRefusedWhenTheNodesPasswdCannotBeRead(t *testing.T) {
+	// a node that answers getent with its own failure, not a miss: its passwd could not be read, which is not an
+	// account that is not there. The lane raises it, so a check of the scope refuses instead of calling it empty.
+	w := newAcctWorld(t)
+	w.git("users/assembly/assembly.container", factory)
+	w.box.n.Do = func(line string, stdin []byte) (string, error, bool) {
+		if strings.HasPrefix(line, "getent ") {
+			return "", &node.Exit{Code: 1}, true
+		}
+		return "", nil, false
+	}
+
+	res := w.tick()
+	_, err := Lane{Node: w.box.n, Account: "assembly"}.Install(context.Background(), engine.Source{Checkout: w.checkout, Node: "mutable/n"})
+
+	if res.OK() || err == nil || !strings.Contains(err.Error(), "exit status 1") {
+		t.Fatalf("ok %v, err %v; want the passwd's read failure, never an empty scope", res.OK(), err)
+	}
+}

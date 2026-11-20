@@ -2,7 +2,6 @@ package containers
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,7 +16,7 @@ import (
 // git is nodes/<node>/users/<account>/apps/.
 func (b *acctBox) getUser(name string) (string, error, bool) {
 	if !b.exists {
-		return "", errors.New("exit status 2"), true
+		return "", &node.Exit{Code: 2}, true // getent's "no such key": the lane reads it as an account not on the node yet
 	}
 	return name + ":x:1002:1002::/home/" + name + ":/usr/sbin/nologin", nil, true
 }
