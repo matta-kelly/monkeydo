@@ -249,7 +249,8 @@ func (l Lane) current(ctx context.Context, name string) ([]byte, bool) {
 	if err != nil {
 		return nil, false
 	}
-	return []byte(out), true
+	// --format ends its output with a newline that is not the value's
+	return []byte(strings.TrimSuffix(out, "\n")), true
 }
 
 // baoChange loads a value read from OpenBao as the podman secret name, and restarts its consumers.

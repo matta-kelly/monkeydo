@@ -36,7 +36,7 @@ func (b *box) do(line string, stdin []byte) (string, error, bool) {
 		return string(data[len("sealed:"):]), nil, true
 	case f[0] == "podman" && f[2] == "inspect" && f[3] == "--showsecret":
 		if v, ok := b.secrets[f[6]]; ok {
-			return v, nil, true
+			return v + "\n", nil, true // as podman's --format prints it
 		}
 		return "", errors.New("no such secret"), true
 	case f[0] == "podman" && f[2] == "inspect":
