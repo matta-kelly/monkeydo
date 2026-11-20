@@ -29,7 +29,7 @@ removed from the host, and nothing it did not create is touched.
 | `packages` | `nodes/<node>/packages` | Debian packages. Only packages monkeydo installed are ever removed |
 | `releases` | `nodes/<node>/releases` | Software another repo's CI published, pinned by digest: a tarball's https URL and sha256, or an OCI artifact on a registry. Kept at `/usr/local/lib/<name>/<version>`, with `current` and `prev` links |
 | `accounts` | `nodes/<node>/accounts` | Users with a home, subuid and subgid ranges, and linger. Never deleted. The name `containers` is rootful Podman's range for `UserNS=auto`, with no user |
-| `secrets` | `nodes/<node>/secrets/sealed/*.sops`, `nodes/<node>/secrets/files` | SOPS-sealed values loaded as Podman secrets, their containers restarted on a change; or, where `files` lists them, written as files, mode 0600 |
+| `secrets` | `nodes/<node>/secrets/sealed/*.sops`, `nodes/<node>/secrets/files`, `nodes/<node>/secrets/openbao` | SOPS-sealed values, or values read from OpenBao, loaded as Podman secrets, their containers restarted on a change; or, where `files` lists them, written as files, mode 0600 |
 | `containers` | `nodes/<node>/`, `nodes/<node>/users/<account>/`, `nodes/<node>/apps/<app>/` | Quadlets for the system and for each account, in its own systemd; and each app's run files from its release, with the node's drop-ins |
 | `units` | `nodes/<node>/units` | systemd services and timers that run outside a container, enabled and running. Only units monkeydo started are ever stopped |
 
@@ -48,6 +48,12 @@ leaves its unit failed.
 
 A secret file is for a reader that takes a credential only from a file, such as Podman's registry login. Each line of
 `secrets/files` is a sealed name and a path: absolute, written by root, or `~<account>/<path>`, written as that account.
+
+A secret from OpenBao is a line of `secrets/openbao`: the Podman secret's name, its path under the KV store `secret/`,
+and its field. The file also names the store's `address` and the `login`: a sealed AppRole login, `{"role_id": ...,
+"secret_id": ...}`, used only to log in. Each tick logs in, reads each path, and loads a value that differs from the
+Podman secret, as a sealed one is. A name comes from a seal or from OpenBao, never both. A store that cannot be reached
+fails the tick and leaves every Podman secret as it is, so the node runs on the values it has.
 
 An app is a release whose run files are Quadlets: its repo ships them, with nothing about the node. git holds the node's
 side in `apps/<app>/<file>.container.d/<name>.conf`, one drop-in for each of the app's containers (network, ports,

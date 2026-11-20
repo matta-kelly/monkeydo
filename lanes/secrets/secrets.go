@@ -4,7 +4,7 @@
 // which reads it at its next run. A container that does not come back healthy puts the secret back, for all its
 // consumers at once. A secret that leaves git is left in place: removing one a container still claims would stop it.
 //
-// A secret can also be delivered as a file (files.go).
+// A secret can also be delivered as a file (files.go), or read from OpenBao in place of a seal (openbao.go).
 //
 // A value never goes in an argument or a log line: it goes to podman on stdin, and an error says which command failed,
 // never what it read.
@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -34,9 +35,10 @@ var wrongSeal = regexp.MustCompile(`^\s*\{\s*"data"\s*:\s*"([^"\\]|\\.)*"\s*\}\s
 type Lane struct {
 	Node     node.Node
 	Window   units.Window
-	KeyFile  string // default /etc/dazoo/age.key
-	Sealed   string // default /usr/share/dazoo/secrets
-	Quadlets string // default /etc/containers/systemd
+	KeyFile  string       // default /etc/dazoo/age.key
+	Sealed   string       // default /usr/share/dazoo/secrets
+	Quadlets string       // default /etc/containers/systemd
+	HTTP     *http.Client // OpenBao's client; default a plain one with a time limit
 }
 
 func (Lane) Name() string { return "secrets" }
@@ -69,6 +71,14 @@ func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]en
 	for _, t := range targets {
 		asFile[t.name] = true
 	}
+	bd, err := Bao(src)
+	if err != nil {
+		return nil, nil, err
+	}
+	loginOnly := ""
+	if bd != nil {
+		loginOnly = bd.login
+	}
 	values := map[string][]byte{}
 	var changes []engine.Change
 	var want []string
@@ -84,6 +94,10 @@ func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]en
 		}
 		if wrongSeal.Match(value) {
 			return nil, nil, fmt.Errorf(`%s.sops is a wrong seal (a value wrapped as {"data": ...})`, name)
+		}
+		if name == loginOnly {
+			values[name] = value
+			continue
 		}
 		if asFile[name] {
 			values[name] = value
@@ -130,6 +144,12 @@ func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]en
 		if ok {
 			changes = append(changes, &fileChange{l: l, t: t, full: full})
 		}
+	}
+	if bd != nil {
+		for _, e := range bd.entries {
+			want = append(want, e.name)
+		}
+		changes = append(changes, l.planBao(ctx, bd, values[bd.login])...)
 	}
 	return changes, want, nil
 }
@@ -206,16 +226,7 @@ func (c *change) Fix(ctx context.Context) (engine.Undo, error) {
 			}
 			c.l.Node.Run(ctx, "podman", "secret", "rm", c.name)
 		}
-		var errs []string
-		for _, u := range c.l.consumers(c.name) {
-			if _, err := c.l.Node.Run(ctx, "systemctl", "restart", u); err != nil {
-				errs = append(errs, err.Error())
-			}
-		}
-		if len(errs) > 0 {
-			return fmt.Errorf("%s", strings.Join(errs, "; "))
-		}
-		return nil
+		return c.l.restartConsumers(ctx, c.name)
 	}
 	if err := node.Write(c.l.Node, path, node.File{Data: c.sealed, Mode: 0o644}); err != nil {
 		return undo, err
@@ -225,14 +236,31 @@ func (c *change) Fix(ctx context.Context) (engine.Undo, error) {
 
 // Healthy restarts every container that claims the secret, since podman gives a value only at a container's start,
 // and watches each settle.
-func (c *change) Healthy(ctx context.Context) error {
-	for _, u := range c.l.consumers(c.name) {
-		ctl := units.System(c.l.Node)
+func (c *change) Healthy(ctx context.Context) error { return c.l.settleConsumers(ctx, c.name) }
+
+// restartConsumers restarts every container that claims name, onto the value it has now: an undo's last step.
+func (l Lane) restartConsumers(ctx context.Context, name string) error {
+	var errs []string
+	for _, u := range l.consumers(name) {
+		if _, err := l.Node.Run(ctx, "systemctl", "restart", u); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// settleConsumers restarts every container that claims name and watches each settle: a change's health.
+func (l Lane) settleConsumers(ctx context.Context, name string) error {
+	for _, u := range l.consumers(name) {
+		ctl := units.System(l.Node)
 		base, err := units.Restart(ctx, ctl, u)
 		if err != nil {
 			return err
 		}
-		if err := units.Settle(ctx, ctl, u, base, c.l.Window); err != nil {
+		if err := units.Settle(ctx, ctl, u, base, l.Window); err != nil {
 			return err
 		}
 	}

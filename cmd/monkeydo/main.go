@@ -89,6 +89,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		report("units", len(us), err)
 		n, err = secrets.CheckFiles(src)
 		report("secret files", n, err)
+		n, err = secrets.CheckBao(src)
+		report("openbao secrets", n, err)
 		for _, a := range append([]string{""}, containers.Accounts(src)...) {
 			name := "containers"
 			if a != "" {

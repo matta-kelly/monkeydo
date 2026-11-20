@@ -34,6 +34,11 @@ func (b *box) do(line string, stdin []byte) (string, error, bool) {
 			return "", errors.New("no age key could open it"), true
 		}
 		return string(data[len("sealed:"):]), nil, true
+	case f[0] == "podman" && f[2] == "inspect" && f[3] == "--showsecret":
+		if v, ok := b.secrets[f[6]]; ok {
+			return v, nil, true
+		}
+		return "", errors.New("no such secret"), true
 	case f[0] == "podman" && f[2] == "inspect":
 		if _, ok := b.secrets[f[3]]; ok {
 			return "", nil, true
