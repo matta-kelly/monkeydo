@@ -16,10 +16,12 @@ import (
 )
 
 // A secret can also be delivered as a file, for a reader that takes a credential only from a file, such as podman's
-// registry login. git lists each in nodes/<node>/secrets/files, one a line: the sealed name, then the path. A path is
+// registry login. git lists each in nodes/<node>/secrets/files, one a line: the secret's name, sealed or read from
+// OpenBao, then the path. A path is
 // absolute, written by root, or ~<account>/<path>, written as that account, so root never follows a path the account
 // controls. The file holds the value, mode 0600. A secret listed there is delivered only as its files, not as a podman
-// secret. A file that leaves git is removed: nothing claims it the way a container claims a podman secret.
+// secret. A file that leaves git is removed: nothing claims it the way a container claims a podman secret. A file whose
+// value OpenBao could not give is left as it is.
 
 var secretName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 
@@ -51,7 +53,8 @@ func parseTarget(name, path string) (target, error) {
 
 var accountName = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 
-// Files is the node's secret files in git, each checked: a name sealed in secrets/sealed/, and a path one can write.
+// Files is the node's secret files in git, each checked: a name sealed in secrets/sealed/ or read from OpenBao into
+// root's podman, and a path one can write.
 // A missing list is no files.
 func Files(src engine.Source) ([]target, error) {
 	dir := filepath.Join(src.Checkout, "nodes", src.Node, "secrets")
@@ -63,6 +66,18 @@ func Files(src engine.Source) ([]target, error) {
 		return nil, err
 	}
 	defer f.Close()
+	bd, err := Bao(src)
+	if err != nil {
+		return nil, err
+	}
+	fromBao := map[string]bool{}
+	if bd != nil {
+		for _, e := range bd.entries {
+			if e.account == "" {
+				fromBao[e.name] = true
+			}
+		}
+	}
 	seen := map[string]bool{}
 	var out []target
 	sc := bufio.NewScanner(f)
@@ -82,8 +97,8 @@ func Files(src engine.Source) ([]target, error) {
 		if err != nil {
 			return nil, err
 		}
-		if _, err := os.Stat(filepath.Join(dir, "sealed", t.name+".sops")); err != nil {
-			return nil, fmt.Errorf("secrets/files: %s names %s, which is not sealed for this node", t.path, t.name)
+		if _, err := os.Stat(filepath.Join(dir, "sealed", t.name+".sops")); err != nil && !fromBao[t.name] {
+			return nil, fmt.Errorf("secrets/files: %s names %s, which is neither sealed for this node nor read from OpenBao", t.path, t.name)
 		}
 		if seen[t.path] {
 			return nil, fmt.Errorf("secrets/files: %s is named twice", t.path)

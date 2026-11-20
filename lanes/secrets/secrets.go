@@ -57,7 +57,8 @@ func (l Lane) paths() Lane {
 }
 
 // Plan proves every sealed file opens and is no wrong seal, then names each secret whose ciphertext on the node differs
-// from git's, or whose podman secret is missing. One that does not prove refuses the whole lane.
+// from git's, or whose podman secret is missing; each value read from OpenBao that differs from its podman secret; and
+// each secret file that differs from its value. One that does not prove refuses the whole lane.
 func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]engine.Change, []string, error) {
 	l = l.paths()
 	dir := filepath.Join(src.Checkout, "nodes", src.Node, "secrets", "sealed")
@@ -108,15 +109,44 @@ func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]en
 		if err != nil {
 			return nil, nil, err
 		}
-		_, missing := l.Node.Run(ctx, "podman", "secret", "inspect", name)
-		if ok && bytes.Equal(have.Data, sealed) && missing == nil {
+		if ok && bytes.Equal(have.Data, sealed) && l.root().exists(ctx, name) {
 			continue
 		}
 		changes = append(changes, &change{l: l, name: name, sealed: sealed, value: value})
 	}
+	// OpenBao's values, read once: each a podman secret, or the value of the files that name it. A value that could not
+	// be read is a failed change, and what it would replace stays as it is.
+	unread := map[string]bool{}
+	if bd != nil {
+		read, failed := l.readBao(ctx, bd, values[bd.login])
+		changes = append(changes, failed...)
+		for _, e := range bd.entries {
+			want = append(want, e.name)
+			v, ok := read[e.name]
+			if !ok {
+				unread[e.name] = true
+				continue
+			}
+			if asFile[e.name] {
+				values[e.name] = v
+				continue
+			}
+			c, err := l.planBao(ctx, e, v)
+			if err != nil {
+				return nil, nil, err
+			}
+			if c != nil {
+				changes = append(changes, c)
+			}
+		}
+	}
 	listed := map[string]bool{}
 	for _, t := range targets {
 		listed[t.path] = true
+		if unread[t.name] {
+			want = append(want, t.path) // kept as it is until OpenBao answers
+			continue
+		}
 		_, full, ok, err := l.where(ctx, t.path)
 		if err != nil {
 			return nil, nil, err
@@ -145,12 +175,6 @@ func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]en
 			changes = append(changes, &fileChange{l: l, t: t, full: full})
 		}
 	}
-	if bd != nil {
-		for _, e := range bd.entries {
-			want = append(want, e.name)
-		}
-		changes = append(changes, l.planBao(ctx, bd, values[bd.login])...)
-	}
 	return changes, want, nil
 }
 
@@ -161,35 +185,6 @@ func (l Lane) open(ctx context.Context, path string) ([]byte, error) {
 	out, err := l.Node.RunCmd(ctx, node.Cmd{Name: "sops", Args: []string{"-d", path}, Env: []string{"SOPS_AGE_KEY_FILE=" + l.Node.Path(l.KeyFile)}, Quiet: true, Raw: true})
 	// trailing newlines dropped, as the shell's $(sops -d) dropped them, so a value loads as it always has
 	return []byte(strings.TrimRight(out, "\n")), err
-}
-
-// load replaces the podman secret name with value: podman's secrets cannot be changed, only removed and made again.
-func (l Lane) load(ctx context.Context, name string, value []byte) error {
-	l.Node.Run(ctx, "podman", "secret", "rm", name) // a missing one is fine
-	_, err := l.Node.RunCmd(ctx, node.Cmd{Name: "podman", Args: []string{"secret", "create", name, "-"}, Stdin: value})
-	return err
-}
-
-// consumers are the units of the quadlets that claim name: a line Secret=<name>, or Secret=<name>,<options>. A job
-// (units.Job) is not one: its timer starts it, and it reads the new value at its next run.
-func (l Lane) consumers(name string) []string {
-	files, _ := filepath.Glob(filepath.Join(l.Node.Path(l.Quadlets), "*.container"))
-	sort.Strings(files)
-	var out []string
-	for _, f := range files {
-		data, err := os.ReadFile(f)
-		if err != nil || units.Job(data) {
-			continue
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			v, ok := strings.CutPrefix(strings.TrimSpace(line), "Secret=")
-			if ok && (v == name || strings.HasPrefix(v, name+",")) {
-				out = append(out, strings.TrimSuffix(filepath.Base(f), ".container")+".service")
-				break
-			}
-		}
-	}
-	return out
 }
 
 type change struct {
@@ -203,6 +198,7 @@ func (c *change) Thing() string { return c.name }
 func (c *change) Owned() bool   { return true }
 
 func (c *change) Fix(ctx context.Context) (engine.Undo, error) {
+	p := c.l.root()
 	path := c.l.delivered(c.name)
 	before, had, err := node.Read(c.l.Node, path)
 	if err != nil {
@@ -217,52 +213,23 @@ func (c *change) Fix(ctx context.Context) (engine.Undo, error) {
 			if err != nil {
 				return err
 			}
-			if err := c.l.load(ctx, c.name, old); err != nil {
+			if err := p.load(ctx, c.name, old); err != nil {
 				return err
 			}
 		} else {
 			if err := node.Remove(c.l.Node, path); err != nil {
 				return err
 			}
-			c.l.Node.Run(ctx, "podman", "secret", "rm", c.name)
+			p.remove(ctx, c.name)
 		}
-		return c.l.restartConsumers(ctx, c.name)
+		return p.restart(ctx, c.name)
 	}
 	if err := node.Write(c.l.Node, path, node.File{Data: c.sealed, Mode: 0o644}); err != nil {
 		return undo, err
 	}
-	return undo, c.l.load(ctx, c.name, c.value)
+	return undo, p.load(ctx, c.name, c.value)
 }
 
 // Healthy restarts every container that claims the secret, since podman gives a value only at a container's start,
 // and watches each settle.
-func (c *change) Healthy(ctx context.Context) error { return c.l.settleConsumers(ctx, c.name) }
-
-// restartConsumers restarts every container that claims name, onto the value it has now: an undo's last step.
-func (l Lane) restartConsumers(ctx context.Context, name string) error {
-	var errs []string
-	for _, u := range l.consumers(name) {
-		if _, err := l.Node.Run(ctx, "systemctl", "restart", u); err != nil {
-			errs = append(errs, err.Error())
-		}
-	}
-	if len(errs) > 0 {
-		return fmt.Errorf("%s", strings.Join(errs, "; "))
-	}
-	return nil
-}
-
-// settleConsumers restarts every container that claims name and watches each settle: a change's health.
-func (l Lane) settleConsumers(ctx context.Context, name string) error {
-	for _, u := range l.consumers(name) {
-		ctl := units.System(l.Node)
-		base, err := units.Restart(ctx, ctl, u)
-		if err != nil {
-			return err
-		}
-		if err := units.Settle(ctx, ctl, u, base, l.Window); err != nil {
-			return err
-		}
-	}
-	return nil
-}
+func (c *change) Healthy(ctx context.Context) error { return c.l.root().settle(ctx, c.name) }

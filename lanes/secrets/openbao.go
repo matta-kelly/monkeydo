@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/matta-kelly/monkeydo/engine"
-	"github.com/matta-kelly/monkeydo/node"
 )
 
 // A secret can also come from OpenBao, the fleet's store for machine secrets. git lists each in
@@ -31,6 +30,13 @@ import (
 // before it can reach the store. It is used only to log in, never loaded as a podman secret. A name comes from
 // OpenBao or from a seal, never both.
 //
+// A name <account>/<name> is the podman secret <name> in that account's rootless podman, its consumers the account's
+// Quadlets (scope.go); the node reads it with its own login, so an account needs none:
+//
+//	assembly/fireworks-api-key  fireworks/api  api_key
+//
+// A name secrets/files lists is delivered as those files, as a sealed one is (files.go), and not as a podman secret.
+//
 // Each tick logs in, reads every path, and compares each value with the podman secret: one that differs is loaded and
 // its consumers restarted, as a sealed one is. A store that cannot be reached, or a path that cannot be read, fails as
 // one change and leaves the podman secrets as they are: a node keeps running on the values it has while the store is
@@ -38,11 +44,13 @@ import (
 
 var baoPath = regexp.MustCompile(`^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$`)
 
-// baoEntry is one podman secret read from OpenBao.
+// baoEntry is one secret read from OpenBao.
 type baoEntry struct {
-	name  string // the podman secret
-	path  string // under secret/
-	field string // the key in that secret
+	name    string // as git names it: the podman secret, or <account>/<podman secret>
+	path    string // under secret/
+	field   string // the key in that secret
+	account string // "" for root's podman
+	secret  string // the podman secret's name, in its podman
 }
 
 // baoDecl is a node's secrets/openbao.
@@ -91,14 +99,20 @@ func Bao(src engine.Source) (*baoDecl, error) {
 			}
 			d.login = fields[1]
 		case len(fields) == 3:
-			e := baoEntry{name: fields[0], path: fields[1], field: fields[2]}
-			if !secretName.MatchString(e.name) {
+			e := baoEntry{name: fields[0], path: fields[1], field: fields[2], secret: fields[0]}
+			if acct, secret, ok := strings.Cut(e.name, "/"); ok {
+				if !accountName.MatchString(acct) || acct == "root" {
+					return nil, fmt.Errorf("secrets/openbao: %q is not <account>/<name>", e.name)
+				}
+				e.account, e.secret = acct, secret
+			}
+			if !secretName.MatchString(e.secret) {
 				return nil, fmt.Errorf("secrets/openbao: %q is not a secret name", e.name)
 			}
 			if !baoPath.MatchString(e.path) || strings.Contains("/"+e.path+"/", "/../") || strings.Contains("/"+e.path+"/", "/./") {
 				return nil, fmt.Errorf("secrets/openbao: %s is not a clean path under secret/", e.path)
 			}
-			if sealed(e.name) {
+			if e.account == "" && sealed(e.name) {
 				return nil, fmt.Errorf("secrets/openbao: %s is also sealed; a secret comes from one place", e.name)
 			}
 			if seen[e.name] {
@@ -107,7 +121,7 @@ func Bao(src engine.Source) (*baoDecl, error) {
 			seen[e.name] = true
 			d.entries = append(d.entries, e)
 		default:
-			return nil, fmt.Errorf("secrets/openbao: %q is not address <url>, login <sealed name> or <name> <path> <field>", strings.TrimSpace(line))
+			return nil, fmt.Errorf("secrets/openbao: %q is not address <url>, login <sealed name> or [<account>/]<name> <path> <field>", strings.TrimSpace(line))
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -216,69 +230,75 @@ func (b *bao) revoke(ctx context.Context) {
 	}
 }
 
-// planBao reads each listed secret from OpenBao and names each podman secret that differs. cred is the opened login.
-func (l Lane) planBao(ctx context.Context, d *baoDecl, cred []byte) []engine.Change {
+// readBao logs in and reads each listed secret: its value by the name git gives it, and a failed change for each one
+// that could not be read. cred is the opened login. The token is revoked before it returns.
+func (l Lane) readBao(ctx context.Context, d *baoDecl, cred []byte) (map[string][]byte, []engine.Change) {
 	client := l.HTTP
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
 	b := &bao{addr: d.addr, client: client}
 	if err := b.login(ctx, cred); err != nil {
-		return []engine.Change{&baoFailed{thing: "openbao", err: err}}
+		return nil, []engine.Change{&baoFailed{thing: "openbao", err: err}}
 	}
 	defer b.revoke(ctx)
-	var changes []engine.Change
+	values := map[string][]byte{}
+	var failed []engine.Change
 	for _, e := range d.entries {
-		value, err := b.read(ctx, e.path, e.field)
+		v, err := b.read(ctx, e.path, e.field)
 		if err != nil {
-			changes = append(changes, &baoFailed{thing: e.name, err: err})
+			failed = append(failed, &baoFailed{thing: e.name, err: err})
 			continue
 		}
-		have, ok := l.current(ctx, e.name)
-		if ok && bytes.Equal(have, value) {
-			continue
+		values[e.name] = v
+	}
+	return values, failed
+}
+
+// planBao is the change that loads value as e's podman secret, or nil when the podman secret is value already or its
+// account is not on the node yet.
+func (l Lane) planBao(ctx context.Context, e baoEntry, value []byte) (engine.Change, error) {
+	p := l.root()
+	if e.account != "" {
+		in, ok, err := l.in(ctx, e.account)
+		if err != nil || !ok {
+			return nil, err
 		}
-		changes = append(changes, &baoChange{l: l, name: e.name, value: value})
+		p = in
 	}
-	return changes
+	if have, ok := p.current(ctx, e.secret); ok && bytes.Equal(have, value) {
+		return nil, nil
+	}
+	return &baoChange{p: p, name: e.name, secret: e.secret, value: value}, nil
 }
 
-// current is the value of the podman secret name. ok false: there is none.
-func (l Lane) current(ctx context.Context, name string) ([]byte, bool) {
-	out, err := l.Node.RunCmd(ctx, node.Cmd{Name: "podman", Args: []string{"secret", "inspect", "--showsecret", "--format", "{{.SecretData}}", name}, Quiet: true, Raw: true})
-	if err != nil {
-		return nil, false
-	}
-	// --format ends its output with a newline that is not the value's
-	return []byte(strings.TrimSuffix(out, "\n")), true
-}
-
-// baoChange loads a value read from OpenBao as the podman secret name, and restarts its consumers.
+// baoChange loads a value read from OpenBao as a podman secret, and restarts its consumers.
 type baoChange struct {
-	l     Lane
-	name  string
-	value []byte
+	p      pod
+	name   string // as git names it
+	secret string // in p
+	value  []byte
 }
 
 func (c *baoChange) Thing() string { return c.name }
 func (c *baoChange) Owned() bool   { return true }
 
 func (c *baoChange) Fix(ctx context.Context) (engine.Undo, error) {
-	before, had := c.l.current(ctx, c.name)
+	before, had := c.p.current(ctx, c.secret)
 	undo := func(ctx context.Context) error {
 		if had {
-			if err := c.l.load(ctx, c.name, before); err != nil {
+			if err := c.p.load(ctx, c.secret, before); err != nil {
 				return err
 			}
 		} else {
-			c.l.Node.Run(ctx, "podman", "secret", "rm", c.name)
+			c.p.remove(ctx, c.secret)
 		}
-		return c.l.restartConsumers(ctx, c.name)
+		return c.p.restart(ctx, c.secret)
 	}
-	return undo, c.l.load(ctx, c.name, c.value)
+	return undo, c.p.load(ctx, c.secret, c.value)
 }
 
-func (c *baoChange) Healthy(ctx context.Context) error { return c.l.settleConsumers(ctx, c.name) }
+func (c *baoChange) Healthy(ctx context.Context) error { return c.p.settle(ctx, c.secret) }
 
 // baoFailed is a secret the tick could not read from OpenBao: it fails, and the podman secret stays as it is.
 type baoFailed struct {
