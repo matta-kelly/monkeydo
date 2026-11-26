@@ -28,7 +28,7 @@ jobs:
           go-version-file: go.mod
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
         with:
-          just-version: '1.56.0'
+          just-version: '1.59.0'
       - run: scripts/check.sh
       # A release GitHub has already is left as it is: a run again, or a version released by hand.
       - name: Build and release, if GitHub does not have this version
