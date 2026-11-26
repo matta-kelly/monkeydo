@@ -169,3 +169,75 @@ func TestCheckAppsWantsAPinAndUserNSAuto(t *testing.T) {
 		t.Fatalf("a drop-in without UserNS=auto: %v", err)
 	}
 }
+
+const (
+	kubeFile = "[Kube]\nYaml=shop.yaml\nConfigMap=shop.prod.yaml\n"
+	kubeDrop = "[Kube]\nUserNS=auto\nNetwork=data.network\nPublishPort=3070:3070\n"
+	kubeYaml = "apiVersion: v1\nkind: Pod\nmetadata:\n  name: shop\nspec:\n  containers:\n    - name: shop\n      image: ghcr.io/example/shop:2\n"
+	kubeVals = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: shop\ndata:\n  A: \"1\"\n"
+)
+
+// kubeWorld is a node with one dazoo quadlet and the app shop as a definition: its .kube and YAML on the node, and
+// its drop-in and pin in git.
+func kubeWorld(t *testing.T) *world {
+	w := newWorld(t)
+	w.git("web.container", web)
+	w.git("releases", pin)
+	w.git("apps/shop/shop.kube.d/node.conf", kubeDrop)
+	w.release("shop", "shop.kube", kubeFile)
+	w.release("shop", "shop.yaml", kubeYaml)
+	w.release("shop", "shop.prod.yaml", kubeVals)
+	return w
+}
+
+func TestAnAppsKubeAndItsYamlAreWrittenAndItsUnitRestarted(t *testing.T) {
+	w := kubeWorld(t)
+	res := w.tick()
+	for file, want := range map[string]string{"shop.kube": kubeFile, "shop.yaml": kubeYaml, "shop.prod.yaml": kubeVals, "shop.kube.d/node.conf": kubeDrop} {
+		if got, ok := w.onBox(file); !ok || got != want {
+			t.Fatalf("%s: on the box %v, %q; ok %v; log:\n%s", file, ok, got, res.OK(), w.log.String())
+		}
+	}
+	if !res.OK() || !w.sd.started["shop.service"] {
+		t.Fatalf("ok %v, shop.service restarted %v; log:\n%s", res.OK(), w.sd.started["shop.service"], w.log.String())
+	}
+	for _, c := range w.sd.n.Calls() {
+		if strings.Contains(c, "shop.prod.service") || strings.Contains(c, "shop.yaml") && strings.Contains(c, "systemctl") {
+			t.Fatalf("a YAML is no unit of its own: %s", c)
+		}
+	}
+}
+
+func TestANewReleasesYamlRestartsTheKubeThatNamesIt(t *testing.T) {
+	w := kubeWorld(t)
+	w.tick()
+	w.sd.started = map[string]bool{}
+	w.release("shop", "shop.yaml", strings.Replace(kubeYaml, "shop:2", "shop:3", 1))
+
+	res := w.tick()
+
+	if file, _ := w.onBox("shop.yaml"); !res.OK() || !strings.Contains(file, "shop:3") || !w.sd.started["shop.service"] {
+		t.Fatalf("ok %v, yaml %q, restarted %v; log:\n%s", res.OK(), file, w.sd.started["shop.service"], w.log.String())
+	}
+	if w.sd.started["web.service"] {
+		t.Fatal("a unit the release does not touch was restarted")
+	}
+}
+
+func TestAKubeAppIsHeldToUserNSAuto(t *testing.T) {
+	cases := map[string]func(w *world){
+		"a kube with no drop-in":    func(w *world) { w.release("shop", "cart.kube", kubeFile) },
+		"its own kube sets UserNS":  func(w *world) { w.release("shop", "shop.kube", kubeFile+"UserNS=host\n") },
+		"a drop-in not UserNS=auto": func(w *world) { w.git("apps/shop/shop.kube.d/node.conf", "[Kube]\nUserNS=host\n") },
+	}
+	for name, setup := range cases {
+		w := kubeWorld(t)
+		setup(w)
+		if res := w.tick(); res.OK() {
+			t.Fatalf("%s: expected a refusal; log:\n%s", name, w.log.String())
+		}
+		if _, ok := w.onBox("shop.kube"); ok {
+			t.Fatalf("%s: the app was written", name)
+		}
+	}
+}

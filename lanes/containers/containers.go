@@ -41,7 +41,11 @@ var kinds = map[string]string{
 }
 
 // restarted are the kinds whose unit a change restarts: the others take effect when a unit that uses them starts.
-var restarted = map[string]bool{".container": true, ".network": true, ".volume": true, ".build": true}
+var restarted = map[string]bool{".container": true, ".network": true, ".volume": true, ".build": true, ".kube": true}
+
+// data is whether a file is a .kube's Kubernetes YAML (Yaml=, ConfigMap=): a file of its unit, never a unit of its
+// own. Only an app's release has one.
+func data(file string) bool { return filepath.Ext(file) == ".yaml" }
 
 var placeholder = regexp.MustCompile(`^[^#]*\$\{[A-Za-z_]`)
 
@@ -158,16 +162,19 @@ func unit(file string) string {
 	return strings.TrimSuffix(file, ext) + kinds[ext] + ".service"
 }
 
-// rank orders the files a tick writes: builds, then networks, volumes, drop-ins and the rest, then containers, so a
-// container starts with its drop-ins in place.
+// rank orders the files a tick writes: builds and a .kube's YAML, then networks, volumes, drop-ins and the rest, then
+// containers and .kube files, so a unit starts with its drop-ins and its YAML in place.
 func rank(file string) int {
 	if dropIn(file) {
 		return 1
 	}
+	if data(file) {
+		return 0
+	}
 	switch filepath.Ext(file) {
 	case ".build":
 		return 0
-	case ".container":
+	case ".container", ".kube":
 		return 2
 	}
 	return 1
@@ -180,7 +187,9 @@ var NothingToInstall = errors.New("renders no unit file: applying it would remov
 func Units(want map[string][]byte) int {
 	units := map[string]bool{}
 	for name := range want {
-		units[unit(name)] = true
+		if !data(name) {
+			units[unit(name)] = true
+		}
 	}
 	return len(units)
 }
@@ -281,7 +290,7 @@ func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]en
 		}
 	}
 	for _, name := range same {
-		if dropIn(name) || filepath.Ext(name) != ".container" || units.Job(want[name]) {
+		if ext := filepath.Ext(name); dropIn(name) || (ext != ".container" && ext != ".kube") || units.Job(want[name]) {
 			continue
 		}
 		if uses(want[name], moved) {
@@ -293,10 +302,15 @@ func (l Lane) Plan(ctx context.Context, src engine.Source, owned []string) ([]en
 	return changes, paths, nil
 }
 
-// uses says whether a container's file names, as its Image=, a build that moved this tick.
-func uses(container []byte, moved map[string]bool) bool {
-	for _, line := range strings.Split(string(container), "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "Image="); ok && strings.HasSuffix(v, ".build") && moved[v] {
+// uses says whether a unit's file names a file that moved this tick: a container's Image= a build, or a .kube's
+// Yaml= or ConfigMap= its YAML.
+func uses(file []byte, moved map[string]bool) bool {
+	for _, line := range strings.Split(string(file), "\n") {
+		key, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || !moved[v] {
+			continue
+		}
+		if (key == "Image" && strings.HasSuffix(v, ".build")) || ((key == "Yaml" || key == "ConfigMap") && data(v)) {
 			return true
 		}
 	}
@@ -409,7 +423,7 @@ func (c *change) Fix(ctx context.Context) (engine.Undo, error) {
 			}
 			return nil
 		}
-		if !dropIn(c.file) {
+		if !dropIn(c.file) && !data(c.file) {
 			c.sc.ctl()(ctx, "stop", u)
 		}
 		// a drop-in's write makes its folder again: a removal takes the folder last, so the undo finds it gone
@@ -418,8 +432,9 @@ func (c *change) Fix(ctx context.Context) (engine.Undo, error) {
 		}
 		return c.reload(ctx)
 	}
-	if !c.keep && dropIn(c.file) {
-		// a drop-in that goes leaves its unit to its file: the file goes too, or changes, in the same tick
+	if !c.keep && (dropIn(c.file) || data(c.file)) {
+		// a drop-in or a .kube's YAML that goes leaves its unit to its file: the file goes too, or changes, in the
+		// same tick
 		if err := c.sc.remove(ctx, c.file); err != nil {
 			return undo, err
 		}

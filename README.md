@@ -60,11 +60,14 @@ A name `<account>/<name>` in `secrets/openbao` is the Podman secret `<name>` in 
 the account's own Quadlets and restarted by its systemd. The node reads it with its own login, so an account needs no
 login of its own. Seals are the node's secret zero, so an account's secret comes from OpenBao only.
 
-An app is a release whose run files are Quadlets: its repo ships them, with nothing about the node. git holds the node's
-side in `apps/<app>/<file>.container.d/<name>.conf`, one drop-in for each of the app's containers (network, ports,
-registry login, order, settings). Both go into `/etc/containers/systemd`, so a new release or drop-in restarts only what
-it changed, and a unit that does not settle is put back. Each app container runs in its own user namespace: its drop-in
-must set `UserNS=auto`, and an app file that sets `UserNS` is refused, in `check` and on the node.
+An app is a release whose run files are Quadlets: its repo ships them, with nothing about the node. They are
+`.container` files, or a `.kube` file with the Kubernetes YAML it plays (`Yaml=`, `ConfigMap=`, each `<app>.yaml` or
+`<app>.<name>.yaml`), which crate ships from a repo's definition. git holds the node's side in
+`apps/<app>/<file>.container.d/<name>.conf` or `<file>.kube.d/<name>.conf`, one drop-in for each of the app's
+containers and kube files (network, ports, registry login, order). All of them go into `/etc/containers/systemd`, so a
+new release or drop-in restarts only what it changed (a `.kube` when it or its YAML changes), and a unit that does not
+settle is put back. Each app container and kube file runs in its own user namespace: its drop-in must set
+`UserNS=auto`, and an app file that sets `UserNS` is refused, in `check` and on the node.
 
 Secret values are passed on stdin only, never in arguments or logs. In an account's home, monkeydo reads and writes only
 as that account.

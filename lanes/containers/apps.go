@@ -20,8 +20,11 @@ import (
 // for an account. The scope's lane puts the release's files from /usr/local/lib/<app>/current and git's drop-ins side
 // by side in the scope's folder, so a new release or a new drop-in is a change like any other.
 //
-// The system keeps each app in a user namespace of its own: each of the app's containers has a drop-in that sets
-// UserNS=auto, and an app's own file that sets UserNS is refused. That is the system's rule alone: rootless Podman
+// A release's files are Quadlets and the Kubernetes YAML its .kube files play (Yaml=, ConfigMap=), which is a file of
+// that unit and no unit of its own (data).
+//
+// The system keeps each app in a user namespace of its own: each of the app's containers and kube files has a drop-in
+// that sets UserNS=auto, and an app's own file that sets UserNS is refused. That is the system's rule alone: rootless Podman
 // takes an account's own subordinate IDs, so an account's app runs as the account and needs no drop-in. dazoo's check
 // proves git's side; the lane proves the release's side before it writes anything.
 
@@ -103,7 +106,7 @@ func (a app) DropIns(src engine.Source) (map[string][]byte, error) {
 		return nil, fmt.Errorf("app %s: no drop-in, so nothing keeps it in its own user namespace", a)
 	}
 	for _, file := range dropInFiles(out) {
-		if filepath.Ext(file) != ".container" {
+		if ext := filepath.Ext(file); ext != ".container" && ext != ".kube" {
 			continue
 		}
 		if v := lastUserNS(out, file); v != "auto" {
@@ -158,7 +161,7 @@ func renderApps(n node.Node, src engine.Source, account string, want map[string]
 		}
 		files := map[string]bool{}
 		for _, e := range entries {
-			if _, ok := kinds[filepath.Ext(e.Name())]; !ok || e.IsDir() {
+			if _, ok := kinds[filepath.Ext(e.Name())]; (!ok && !data(e.Name())) || e.IsDir() {
 				continue
 			}
 			f, ok, err := node.Read(n, filepath.Join(cur, e.Name()))
@@ -181,7 +184,7 @@ func renderApps(n node.Node, src engine.Source, account string, want map[string]
 		}
 		if a.account == "" {
 			for name := range files {
-				if filepath.Ext(name) == ".container" && lastUserNS(drops, name) == "" {
+				if ext := filepath.Ext(name); (ext == ".container" || ext == ".kube") && lastUserNS(drops, name) == "" {
 					return fmt.Errorf("app %s: %s has no drop-in in git, so nothing keeps it in its own user namespace", a, name)
 				}
 			}
