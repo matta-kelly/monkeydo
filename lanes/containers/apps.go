@@ -127,12 +127,8 @@ func CheckApps(src engine.Source) (int, error) {
 	for _, r := range rels {
 		pinned[r.Name] = true
 	}
-	all := Apps(src)
-	for _, account := range Accounts(src) {
-		all = append(all, apps(src, account)...)
-	}
 	n := 0
-	for _, a := range all {
+	for _, a := range allApps(src) {
 		if !pinned[a.name] {
 			return n, fmt.Errorf("app %s has no pin in releases, so the node has no run files for it", a)
 		}
@@ -142,6 +138,24 @@ func CheckApps(src engine.Source) (int, error) {
 		n++
 	}
 	return n, nil
+}
+
+// allApps are the apps of every scope, the system's and each account's.
+func allApps(src engine.Source) []app {
+	all := Apps(src)
+	for _, account := range Accounts(src) {
+		all = append(all, apps(src, account)...)
+	}
+	return all
+}
+
+// AppReleases are the names of the releases every scope's apps run from: what a render of the node reads.
+func AppReleases(src engine.Source) []string {
+	var out []string
+	for _, a := range allApps(src) {
+		out = append(out, a.name)
+	}
+	return out
 }
 
 // renderApps adds each app's run files from its current release, and git's drop-ins, to want, the render of the

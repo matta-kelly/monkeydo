@@ -76,13 +76,16 @@ as that account.
 
 ```
 monkeydo run   --checkout DIR --node mutable/<name> [--lanes files,packages,releases,accounts,secrets,containers,units]
-monkeydo check --checkout DIR --node mutable/<name> [--quadlet GENERATOR]
+monkeydo check --checkout DIR --node mutable/<name> [--quadlet GENERATOR] [--auth REGISTRY-LOGIN]
 monkeydo version
 ```
 
 - `run` applies the lanes to the host. Use `--root` and `--state` to point it at another root and record folder.
-- `check` proves a declaration without a host, for CI. With `--quadlet`, it also validates every Quadlet render with
-  that generator.
+- `check` proves a declaration without a host, for CI, from the commit alone: its verdict never depends on the machine
+  it runs on. It renders each scope, the system's and every account's, as the lane would on a scratch root that the
+  commit makes: each app's release fetched by its pin and proved by its digest, and a passwd with each account git
+  keeps. `--auth` is a registry login in Podman's auth file format, for releases on a private registry; it goes with the
+  scratch root. With `--quadlet`, it also validates every Quadlet render with that generator.
 
 | Exit status | Meaning |
 | --- | --- |

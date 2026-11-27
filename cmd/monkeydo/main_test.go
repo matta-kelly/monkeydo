@@ -1,14 +1,18 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
-
-	"github.com/matta-kelly/monkeydo/node"
 )
 
 // setup is a checkout with one file for node mutable/n, a root and a state folder.
@@ -166,51 +170,40 @@ func TestCheckProvesEachRenderWithTheGeneratorItIsGiven(t *testing.T) {
 	}
 }
 
-func TestCheckTakesAnAccountAppAsItTakesASystemApp(t *testing.T) {
-	checkout, _, _ := setup(t, "dazoo/x.conf")
-	write := func(rel, data string) {
-		p := filepath.Join(checkout, "nodes", "mutable", "n", rel)
-		os.MkdirAll(filepath.Dir(p), 0o755)
-		os.WriteFile(p, []byte(data), 0o644)
-	}
-	write("web.container", "[Container]\nImage=x\n")
-	write("users/assembly/assembly.container", "[Container]\nImage=a\n")
-	write("users/assembly/apps/shop/shop.container.d/node.conf", "[Container]\nNetwork=data.network\n")
-	write("releases", "shop sha-1 https://example.test/shop.tgz sha256:"+strings.Repeat("0", 64)+"\n")
-
-	code, out := call("check", "--checkout", checkout, "--node", "mutable/n")
-	if code != 0 || !strings.Contains(out, "apps: 1 ok") {
-		t.Fatalf("a good account app: exit %d, apps ok %v", code, strings.Contains(out, "apps: 1 ok"))
-	}
-
-	// the same break a system app is refused for: something in its folder that is not a drop-in
-	os.WriteFile(filepath.Join(checkout, "nodes", "mutable", "n", "users/assembly/apps/shop/notes.txt"), []byte("x\n"), 0o644)
-	if code, out := call("check", "--checkout", checkout, "--node", "mutable/n"); code != 1 || !strings.Contains(out, "apps:") {
-		t.Fatalf("a bad account app: exit %d, refused by the apps lane %v", code, strings.Contains(out, "apps:"))
-	}
-}
-
 // checkable is a checkout to run `monkeydo check` on: a node with a Quadlet of its own, a release list with nothing
-// in it, the root the node's release files are read from, and a generator that accepts every render.
+// in it, a registry that serves each release it is given, and a generator that accepts every render.
 type checkable struct {
 	t        *testing.T
 	checkout string
-	root     string
 	args     []string
+	srv      *httptest.Server
+	tarballs map[string][]byte // path on the registry -> the release's tarball
+	accounts []string
 }
 
 func newCheckable(t *testing.T) *checkable {
 	t.Helper()
-	checkout, root, _ := setup(t, "dazoo/x.conf")
+	checkout, _, _ := setup(t, "dazoo/x.conf")
 	gen := filepath.Join(t.TempDir(), "quadlet")
 	// a generator that accepts every render, and says so when run with --help
 	if err := os.WriteFile(gen, []byte("#!/bin/sh\necho --help >&2\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	c := &checkable{t: t, checkout: checkout, root: root}
+	c := &checkable{t: t, checkout: checkout, tarballs: map[string][]byte{}}
+	c.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, ok := c.tarballs[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(data)
+	}))
+	t.Cleanup(c.srv.Close)
+	checkHTTP = c.srv.Client()
+	t.Cleanup(func() { checkHTTP = nil })
 	c.git("admin.container", "[Container]\nImage=admin\n")
 	c.git("releases", "")
-	c.args = []string{"--checkout", checkout, "--node", "mutable/n", "--root", root, "--quadlet", gen}
+	c.args = []string{"--checkout", checkout, "--node", "mutable/n", "--quadlet", gen}
 	return c
 }
 
@@ -225,37 +218,31 @@ func (c *checkable) git(rel, content string) {
 	}
 }
 
+// shopPin pins a release that no registry serves.
 const shopPin = "shop sha-1 https://example.test/shop.tgz sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
 
-// release puts an app's run files on the node, as the releases lane leaves them, under the root the check reads.
+// release publishes an app's release with one run file on the registry, and pins it in git, as its repo's CI and
+// Renovate leave it.
 func (c *checkable) release(app, file, content string) {
 	c.t.Helper()
-	if err := node.Write(node.Real{Root: c.root}, filepath.Join("/usr/local/lib", app, "current", file), node.File{Data: []byte(content), Mode: 0o644}); err != nil {
-		c.t.Fatalf("the release %s of %s on the node: %v", file, app, err)
-	}
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	tw.WriteHeader(&tar.Header{Name: file, Mode: 0o644, Size: int64(len(content)), Typeflag: tar.TypeReg})
+	tw.Write([]byte(content))
+	tw.Close()
+	gz.Close()
+	path := "/" + app + ".tar.gz"
+	c.tarballs[path] = buf.Bytes()
+	sum := sha256.Sum256(buf.Bytes())
+	c.git("releases", fmt.Sprintf("%s sha-1 %s%s sha256:%x\n", app, c.srv.URL, path, sum))
 }
 
-// onNode makes the root a node with the account on it, as the lane reads it: a passwd line whose home is under the
-// root, and that home with its Quadlet folder. The root stands for /, so the home it names, and every folder the lane
-// reads it, is inside it. Without the folder, the lane would read the machine's own /home, never the test's node.
+// onNode keeps the account on the node: a line in git's accounts, which the accounts lane makes on the node.
 func (c *checkable) onNode(account string) {
 	c.t.Helper()
-	passwd := filepath.Join(c.root, "etc", "passwd")
-	if err := os.MkdirAll(filepath.Dir(passwd), 0o755); err != nil {
-		c.t.Fatal(err)
-	}
-	home := filepath.Join(filepath.Join(c.root, "home", account), ".config", "containers", "systemd")
-	if err := os.MkdirAll(home, 0o755); err != nil {
-		c.t.Fatal(err)
-	}
-	data, err := os.ReadFile(passwd)
-	if err != nil && !os.IsNotExist(err) {
-		c.t.Fatal(err)
-	}
-	line := account + ":x:1002:1002::" + home + ":/usr/sbin/nologin\n"
-	if err := os.WriteFile(passwd, append(data, line...), 0o644); err != nil {
-		c.t.Fatal(err)
-	}
+	c.accounts = append(c.accounts, account)
+	c.git("accounts", strings.Join(c.accounts, "\n")+"\n")
 }
 
 // check runs `monkeydo check`, and gives its exit code and what it said.
@@ -279,7 +266,7 @@ func TestCheckPassesAnAccountThatRunsOnlyApps(t *testing.T) {
 func TestCheckStillCountsAScopeTheLaneLeavesToALaterTickAsNoUnit(t *testing.T) {
 	// an account not on the node is not this node's scope: no tick applies it, so no unit of its app is this node's
 	// to hold. The lane says so by installing nothing, which is not a scope it would empty; the check says so too.
-	c := newCheckable(t) // its root holds no passwd, so the account is not on the node
+	c := newCheckable(t) // git keeps no such account on the node, so the accounts lane never makes it
 	c.git("users/assembly/apps/shop/shop.container.d/node.conf", "[Container]\n")
 	c.git("releases", shopPin)
 	c.release("shop", "shop.container", "[Container]\nImage=shop:sha-1\n")
@@ -370,44 +357,6 @@ func TestCheckKeepsTheSystemsRenderAsItIs(t *testing.T) {
 	}
 }
 
-func TestCheckRefusesAnAccountsScopeWhoseAppsRunFilesAreNotOnTheNode(t *testing.T) {
-	// the lane refuses the scope: its app's run files are not on the node, so the tick would empty the account's folder.
-	// The scope's line is the lane's own answer, and it is the same answer the system's app gets.
-	c := newCheckable(t)
-	c.onNode("assembly")
-	c.git("users/assembly/apps/shop/shop.container.d/node.conf", "[Container]\n")
-	c.git("releases", shopPin)
-
-	code, out := c.check()
-
-	if code != 1 {
-		t.Fatalf("exit %d; a scope whose only units are an app's, with no run files on the node, passed:\n%s", code, out)
-	}
-	if want := "containers@assembly: app shop of assembly: its release is not on the node"; !strings.Contains(out, want) {
-		t.Fatalf("want %q, the lane's own answer for the scope:\n%s", want, out)
-	}
-	if strings.Contains(out, "renders no unit file") {
-		t.Fatalf("a scope the lane refuses for its app was called a scope that renders no unit:\n%s", out)
-	}
-}
-
-func TestCheckRefusesTheSystemsAppWhoseRunFilesAreNotOnTheNodeAsItDoesAnAccounts(t *testing.T) {
-	// the system's scope is refused for the same reason as an account's: the system's line is the node's folder, and
-	// its app's run files are the lane's to prove before it writes anything
-	c := newCheckable(t)
-	c.git("apps/shop/shop.container.d/node.conf", "[Container]\nUserNS=auto\n")
-	c.git("releases", shopPin)
-
-	code, out := c.check()
-
-	if code != 1 {
-		t.Fatalf("exit %d:\n%s", code, out)
-	}
-	if want := "containers: app shop: its release is not on the node"; !strings.Contains(out, want) {
-		t.Fatalf("want %q:\n%s", want, out)
-	}
-}
-
 func TestCheckKeepsTheSystemsCountOfItsOwnFolder(t *testing.T) {
 	// the system's line counts the node's own Quadlets, as it always did: its app's units are the apps line's to prove,
 	// and its app's run files must still be on the node for the scope to be one the lane would apply
@@ -428,7 +377,7 @@ func TestCheckKeepsTheSystemsCountOfItsOwnFolder(t *testing.T) {
 
 func TestCheckCountsAnAccountNotOnTheNodeAsNoUnit(t *testing.T) {
 	c := newCheckable(t)
-	// the root holds a passwd, and not the account's line: the node is read, the account is not on it
+	// git keeps another account on the node, and not this one
 	c.onNode("landl-db")
 	c.git("users/assembly/apps/shop/shop.container.d/node.conf", "[Container]\n")
 	c.git("releases", shopPin)
@@ -444,36 +393,76 @@ func TestCheckCountsAnAccountNotOnTheNodeAsNoUnit(t *testing.T) {
 	}
 }
 
-func TestCheckRefusesAnAccountsScopeWhoseNodePasswdCannotBeRead(t *testing.T) {
-	// a passwd the node cannot read is not an account that is not there: the lane raises it, and so does the check.
-	// Taking it for an absent account would report the scope as 0 ok and pass, on a node nobody could read.
+func TestCheckTakesAnAccountAppAsItTakesASystemApp(t *testing.T) {
 	c := newCheckable(t)
 	c.onNode("assembly")
-	c.git("users/assembly/apps/shop/shop.container.d/node.conf", "[Container]\n")
-	c.git("releases", shopPin)
+	c.git("users/assembly/assembly.container", "[Container]\nImage=a\n")
+	c.git("users/assembly/apps/shop/shop.container.d/node.conf", "[Container]\nNetwork=data.network\n")
 	c.release("shop", "shop.container", "[Container]\nImage=shop:sha-1\n")
 
-	if code, out := c.check(); code != 0 {
-		t.Fatalf("the readable passwd: exit %d:\n%s", code, out)
+	if code, out := c.check(); code != 0 || !strings.Contains(out, "apps: 1 ok") {
+		t.Fatalf("a good account app: exit %d:\n%s", code, out)
 	}
-	// a folder where the passwd goes fails the read for every user, the root included
-	passwd := filepath.Join(c.root, "etc", "passwd")
-	if err := os.Remove(passwd); err != nil {
-		t.Fatal(err)
+
+	// the same break a system app is refused for: something in its folder that is not a drop-in
+	c.git("users/assembly/apps/shop/notes.txt", "x\n")
+	if code, out := c.check(); code != 1 || !strings.Contains(out, "apps:") {
+		t.Fatalf("a bad account app: exit %d:\n%s", code, out)
 	}
-	if err := os.Mkdir(passwd, 0o755); err != nil {
-		t.Fatal(err)
+}
+
+func TestCheckRendersAppsFromTheirPinsNeverFromTheMachineItRunsOn(t *testing.T) {
+	// the verdict is the commit's: an app's run files come from its pinned release, fetched and proved by its digest,
+	// so the same commit passes or fails the same on any machine, whatever it has installed
+	for _, account := range []string{"", "assembly"} {
+		c := newCheckable(t)
+		dir := "apps/shop/shop.container.d/node.conf"
+		drop := "[Container]\nUserNS=auto\n"
+		if account != "" {
+			c.onNode(account)
+			dir, drop = "users/"+account+"/"+dir, "[Container]\n"
+		}
+		c.git(dir, drop)
+		c.release("shop", "shop.container", "[Container]\nImage=shop:sha-1\n")
+		if code, out := c.check(); code != 0 {
+			t.Fatalf("%q: a pin the registry serves: exit %d:\n%s", account, code, out)
+		}
+
+		c.git("releases", shopPin) // a pin no registry serves
+
+		code, out := c.check()
+		if code != 1 {
+			t.Fatalf("%q: a pin that cannot be fetched passed:\n%s", account, out)
+		}
+		if want := "node: the node the commit makes: shop sha-1 could not be fetched from its pin"; !strings.Contains(out, want) {
+			t.Fatalf("%q: want %q:\n%s", account, want, out)
+		}
 	}
+}
+
+func TestCheckFetchesAPrivateReleaseWithTheRegistryLoginItIsGiven(t *testing.T) {
+	// the login is the node's own place for it in the scratch root, so the check pulls as the node pulls, and it goes
+	// with the root
+	c := newCheckable(t)
+	c.git("apps/shop/shop.container.d/node.conf", "[Container]\nUserNS=auto\n")
+	c.git("releases", "shop 1 ghcr.example/o/shop-quadlets sha256:"+strings.Repeat("a", 64)+"\n")
 
 	code, out := c.check()
+	if code != 1 || !strings.Contains(out, "no registry login was given: --auth") {
+		t.Fatalf("a private pin with no login: exit %d:\n%s", code, out)
+	}
 
-	if code != 1 {
-		t.Fatalf("a passwd that cannot be read: exit %d; want 1, never 0 ok:\n%s", code, out)
+	auth := filepath.Join(t.TempDir(), "auth.json")
+	os.WriteFile(auth, []byte(`{"auths":{"ghcr.example":{"auth":"dTpw"}}}`), 0o600)
+	c.args = append(c.args, "--auth", auth)
+	code, out = c.check()
+	if code != 1 || strings.Contains(out, "no registry login was given") {
+		t.Fatalf("with a login, the check did not say it had one: exit %d:\n%s", code, out)
 	}
-	if want := "containers@assembly:"; !strings.Contains(out, want) || !strings.Contains(out, "passwd") {
-		t.Fatalf("want the account's line to refuse and name the passwd:\n%s", out)
-	}
-	if strings.Contains(out, "containers@assembly: 0 ok") {
-		t.Fatalf("a passwd that cannot be read was taken for an account not on the node:\n%s", out)
+	left, _ := filepath.Glob(filepath.Join(os.TempDir(), "monkeydo-check-*"))
+	for _, d := range left {
+		if _, err := os.Stat(filepath.Join(d, "etc/dazoo/registry-auth.json")); err == nil {
+			t.Fatalf("the login outlived the check, in %s", d)
+		}
 	}
 }

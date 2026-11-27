@@ -2,7 +2,7 @@
 // puts back a change that fails its health check.
 //
 //	monkeydo run --checkout DIR --node mutable/<name> [--lanes files,packages,releases,accounts,secrets,containers,units] [--root /] [--state /var/lib/monkeydo]
-//	monkeydo check --checkout DIR --node mutable/<name> [--quadlet GENERATOR]
+//	monkeydo check --checkout DIR --node mutable/<name> [--quadlet GENERATOR] [--auth REGISTRY-LOGIN]
 //	monkeydo version
 //
 // Exit status: 0, the node is true to git; 1, a lane refused or a change failed (the log names it); 2, monkeydo itself
@@ -55,9 +55,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fl.SetOutput(stderr)
 	checkout := fl.String("checkout", "", "the dazoo checkout")
 	nodeDir := fl.String("node", "", "this node's folder under nodes/, e.g. mutable/monkeybusiness")
-	root := fl.String("root", "/", "the folder that stands for /")
+	root := fl.String("root", "/", "run: the folder that stands for /")
 	state := fl.String("state", "/var/lib/monkeydo", "where monkeydo keeps its record")
 	quadlet := fl.String("quadlet", "", "check: prove each render with this quadlet generator, as the node does")
+	auth := fl.String("auth", "", "check: a registry login (podman's auth file) for the releases the node's apps pull")
 	laneList := fl.String("lanes", "files", "the lanes to run, in this order: files, packages, releases, accounts, secrets, containers, units")
 	if err := fl.Parse(args[1:]); err != nil {
 		return 2
@@ -92,10 +93,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		report("secret files", n, err)
 		n, err = secrets.CheckBao(src)
 		report("openbao secrets", n, err)
-		// each scope renders as its lane would install it: git's Quadlets and its apps' run files and drop-ins.
+		// each scope renders as its lane would install it on the node the commit makes (scratch.go): git's Quadlets,
+		// and its apps' run files from their pinned releases and drop-ins
+		made, done, serr := scratch(context.Background(), src, *auth)
+		defer done()
+		if serr != nil {
+			report("node", 0, fmt.Errorf("the node the commit makes: %v", serr))
+		}
 		for _, a := range append([]string{""}, containers.Accounts(src)...) {
-			// the root the check reads through is the lane's own, never a node of the process's
-			lane := containers.Lane{Node: node.Real{Root: *root}, Account: a}
+			if serr != nil {
+				break // no scope renders on a node the commit could not make
+			}
+			lane := containers.Lane{Node: made, Account: a}
 			// what the lane would install, apps included: its refusal is the scope's, and its units are the ones it
 			// writes
 			quads, err := lane.Install(context.Background(), src)
