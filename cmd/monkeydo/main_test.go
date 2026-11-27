@@ -6,8 +6,6 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -171,13 +169,12 @@ func TestCheckProvesEachRenderWithTheGeneratorItIsGiven(t *testing.T) {
 }
 
 // checkable is a checkout to run `monkeydo check` on: a node with a Quadlet of its own, a release list with nothing
-// in it, a registry that serves each release it is given, and a generator that accepts every render.
+// in it, the fetched releases (an OCI image layout) the check is given, and a generator that accepts every render.
 type checkable struct {
 	t        *testing.T
 	checkout string
 	args     []string
-	srv      *httptest.Server
-	tarballs map[string][]byte // path on the registry -> the release's tarball
+	layout   string
 	accounts []string
 }
 
@@ -189,21 +186,12 @@ func newCheckable(t *testing.T) *checkable {
 	if err := os.WriteFile(gen, []byte("#!/bin/sh\necho --help >&2\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	c := &checkable{t: t, checkout: checkout, tarballs: map[string][]byte{}}
-	c.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		data, ok := c.tarballs[r.URL.Path]
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
-		w.Write(data)
-	}))
-	t.Cleanup(c.srv.Close)
-	checkHTTP = c.srv.Client()
-	t.Cleanup(func() { checkHTTP = nil })
+	c := &checkable{t: t, checkout: checkout, layout: t.TempDir()}
+	os.MkdirAll(filepath.Join(c.layout, "blobs", "sha256"), 0o755)
+	os.WriteFile(filepath.Join(c.layout, "oci-layout"), []byte(`{"imageLayoutVersion":"1.0.0"}`), 0o644)
 	c.git("admin.container", "[Container]\nImage=admin\n")
 	c.git("releases", "")
-	c.args = []string{"--checkout", checkout, "--node", "mutable/n", "--quadlet", gen}
+	c.args = []string{"--checkout", checkout, "--node", "mutable/n", "--quadlet", gen, "--releases", c.layout}
 	return c
 }
 
@@ -218,10 +206,17 @@ func (c *checkable) git(rel, content string) {
 	}
 }
 
-// shopPin pins a release that no registry serves.
+// shopPin pins a release that was never fetched.
 const shopPin = "shop sha-1 https://example.test/shop.tgz sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
 
-// release publishes an app's release with one run file on the registry, and pins it in git, as its repo's CI and
+// blob puts data in the fetched releases, named by its digest.
+func (c *checkable) blob(data []byte) string {
+	sum := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
+	os.WriteFile(filepath.Join(c.layout, "blobs", "sha256", strings.TrimPrefix(sum, "sha256:")), data, 0o644)
+	return sum
+}
+
+// release fetches an app's release with one run file, as a tarball at a URL, and pins it in git, as its repo's CI and
 // Renovate leave it.
 func (c *checkable) release(app, file, content string) {
 	c.t.Helper()
@@ -232,10 +227,15 @@ func (c *checkable) release(app, file, content string) {
 	tw.Write([]byte(content))
 	tw.Close()
 	gz.Close()
-	path := "/" + app + ".tar.gz"
-	c.tarballs[path] = buf.Bytes()
-	sum := sha256.Sum256(buf.Bytes())
-	c.git("releases", fmt.Sprintf("%s sha-1 %s%s sha256:%x\n", app, c.srv.URL, path, sum))
+	c.git("releases", fmt.Sprintf("%s sha-1 https://example.test/%s.tar.gz %s\n", app, app, c.blob(buf.Bytes())))
+}
+
+// artifact fetches an app's release with one run file, as an OCI artifact: its manifest and the file as its layer.
+func (c *checkable) artifact(app, file, content string) {
+	c.t.Helper()
+	layer := c.blob([]byte(content))
+	m := fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","layers":[{"digest":%q,"annotations":{"org.opencontainers.image.title":%q}}]}`, layer, file)
+	c.git("releases", fmt.Sprintf("%s 1 ghcr.example/o/%s-quadlets %s\n", app, app, c.blob([]byte(m))))
 }
 
 // onNode keeps the account on the node: a line in git's accounts, which the accounts lane makes on the node.
@@ -425,44 +425,75 @@ func TestCheckRendersAppsFromTheirPinsNeverFromTheMachineItRunsOn(t *testing.T) 
 		c.git(dir, drop)
 		c.release("shop", "shop.container", "[Container]\nImage=shop:sha-1\n")
 		if code, out := c.check(); code != 0 {
-			t.Fatalf("%q: a pin the registry serves: exit %d:\n%s", account, code, out)
+			t.Fatalf("%q: a fetched pin: exit %d:\n%s", account, code, out)
 		}
 
-		c.git("releases", shopPin) // a pin no registry serves
+		c.git("releases", shopPin) // a pin that was never fetched
 
 		code, out := c.check()
 		if code != 1 {
 			t.Fatalf("%q: a pin that cannot be fetched passed:\n%s", account, out)
 		}
-		if want := "node: the node the commit makes: shop sha-1 could not be fetched from its pin"; !strings.Contains(out, want) {
+		if want := "node: the node the commit makes: shop sha-1: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef is not in the fetched releases"; !strings.Contains(out, want) {
 			t.Fatalf("%q: want %q:\n%s", account, want, out)
 		}
 	}
 }
 
-func TestCheckFetchesAPrivateReleaseWithTheRegistryLoginItIsGiven(t *testing.T) {
-	// the login is the node's own place for it in the scratch root, so the check pulls as the node pulls, and it goes
-	// with the root
+func TestCheckRendersAnArtifactFromItsManifestAndLayersEachProvedByItsDigest(t *testing.T) {
 	c := newCheckable(t)
 	c.git("apps/shop/shop.container.d/node.conf", "[Container]\nUserNS=auto\n")
-	c.git("releases", "shop 1 ghcr.example/o/shop-quadlets sha256:"+strings.Repeat("a", 64)+"\n")
+	c.artifact("shop", "shop.container", "[Container]\nImage=shop:1\n")
+	if code, out := c.check(); code != 0 || !strings.Contains(out, "apps: 1 ok") {
+		t.Fatalf("a fetched artifact: exit %d:\n%s", code, out)
+	}
+
+	// a blob that is not what its digest names: the check proves it, and does not take the fetch on trust
+	entries, _ := os.ReadDir(filepath.Join(c.layout, "blobs", "sha256"))
+	for _, e := range entries {
+		p := filepath.Join(c.layout, "blobs", "sha256", e.Name())
+		if data, _ := os.ReadFile(p); !bytes.Contains(data, []byte("schemaVersion")) {
+			os.WriteFile(p, []byte("[Container]\nImage=other\n"), 0o644)
+		}
+	}
+	code, out := c.check()
+	if code != 1 || !strings.Contains(out, "does not match its digest") {
+		t.Fatalf("a layer that is not its digest: exit %d:\n%s", code, out)
+	}
+}
+
+func TestCheckOfANodeWithAppsNeedsTheFetchedReleases(t *testing.T) {
+	c := newCheckable(t)
+	c.git("apps/shop/shop.container.d/node.conf", "[Container]\nUserNS=auto\n")
+	c.release("shop", "shop.container", "[Container]\nImage=shop:sha-1\n")
+	c.args = c.args[:len(c.args)-2] // no --releases
 
 	code, out := c.check()
-	if code != 1 || !strings.Contains(out, "no registry login was given: --auth") {
-		t.Fatalf("a private pin with no login: exit %d:\n%s", code, out)
+	if code != 1 || !strings.Contains(out, "no fetched releases were given (--releases)") {
+		t.Fatalf("exit %d:\n%s", code, out)
 	}
 
-	auth := filepath.Join(t.TempDir(), "auth.json")
-	os.WriteFile(auth, []byte(`{"auths":{"ghcr.example":{"auth":"dTpw"}}}`), 0o600)
-	c.args = append(c.args, "--auth", auth)
-	code, out = c.check()
-	if code != 1 || strings.Contains(out, "no registry login was given") {
-		t.Fatalf("with a login, the check did not say it had one: exit %d:\n%s", code, out)
+	// a node with no app needs none
+	os.RemoveAll(filepath.Join(c.checkout, "nodes", "mutable", "n", "apps"))
+	if code, out := c.check(); code != 0 {
+		t.Fatalf("a node with no app: exit %d:\n%s", code, out)
 	}
-	left, _ := filepath.Glob(filepath.Join(os.TempDir(), "monkeydo-check-*"))
-	for _, d := range left {
-		if _, err := os.Stat(filepath.Join(d, "etc/dazoo/registry-auth.json")); err == nil {
-			t.Fatalf("the login outlived the check, in %s", d)
-		}
+}
+
+func TestPinsNamesWhatACheckRendersFromAndNothingElse(t *testing.T) {
+	c := newCheckable(t)
+	c.onNode("assembly")
+	c.git("apps/shop/shop.container.d/node.conf", "[Container]\nUserNS=auto\n")
+	c.git("users/assembly/apps/desk/desk.container.d/node.conf", "[Container]\n")
+	tool := "tool 1 https://example.test/tool.tgz sha256:" + strings.Repeat("b", 64) + "\n"
+	shop := "shop 1 ghcr.example/o/shop-quadlets sha256:" + strings.Repeat("c", 64) + "\n"
+	desk := "desk 2 https://example.test/desk.tgz sha256:" + strings.Repeat("d", 64) + "\n"
+	c.git("releases", tool+shop+desk)
+
+	code, out := call("pins", "--checkout", c.checkout, "--node", "mutable/n")
+
+	want := "https://example.test/desk.tgz sha256:" + strings.Repeat("d", 64) + "\nghcr.example/o/shop-quadlets sha256:" + strings.Repeat("c", 64) + "\n"
+	if code != 0 || out != want {
+		t.Fatalf("exit %d; want the apps' pins alone, sorted by name:\n%s", code, out)
 	}
 }

@@ -2,7 +2,8 @@
 // puts back a change that fails its health check.
 //
 //	monkeydo run --checkout DIR --node mutable/<name> [--lanes files,packages,releases,accounts,secrets,containers,units] [--root /] [--state /var/lib/monkeydo]
-//	monkeydo check --checkout DIR --node mutable/<name> [--quadlet GENERATOR] [--auth REGISTRY-LOGIN]
+//	monkeydo check --checkout DIR --node mutable/<name> [--quadlet GENERATOR] [--releases OCI-LAYOUT]
+//	monkeydo pins  --checkout DIR --node mutable/<name>
 //	monkeydo version
 //
 // Exit status: 0, the node is true to git; 1, a lane refused or a change failed (the log names it); 2, monkeydo itself
@@ -39,16 +40,16 @@ func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: monkeydo run|check|version [flags]")
+		fmt.Fprintln(stderr, "usage: monkeydo run|check|pins|version [flags]")
 		return 2
 	}
 	switch args[0] {
 	case "version":
 		fmt.Fprintln(stdout, version)
 		return 0
-	case "run", "check":
+	case "run", "check", "pins":
 	default:
-		fmt.Fprintf(stderr, "monkeydo: no command %q: run, check or version\n", args[0])
+		fmt.Fprintf(stderr, "monkeydo: no command %q: run, check, pins or version\n", args[0])
 		return 2
 	}
 	fl := flag.NewFlagSet("monkeydo "+args[0], flag.ContinueOnError)
@@ -58,7 +59,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	root := fl.String("root", "/", "run: the folder that stands for /")
 	state := fl.String("state", "/var/lib/monkeydo", "where monkeydo keeps its record")
 	quadlet := fl.String("quadlet", "", "check: prove each render with this quadlet generator, as the node does")
-	auth := fl.String("auth", "", "check: a registry login (podman's auth file) for the releases the node's apps pull")
+	fetched := fl.String("releases", "", "check: an OCI image layout holding the releases monkeydo pins names, fetched before the check")
 	laneList := fl.String("lanes", "files", "the lanes to run, in this order: files, packages, releases, accounts, secrets, containers, units")
 	if err := fl.Parse(args[1:]); err != nil {
 		return 2
@@ -68,6 +69,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	src := engine.Source{Checkout: *checkout, Node: *nodeDir}
+
+	if args[0] == "pins" {
+		lines, err := pins(src)
+		if err != nil {
+			fmt.Fprintf(stderr, "monkeydo: pins %s: %v\n", *nodeDir, err)
+			return 1
+		}
+		for _, l := range lines {
+			fmt.Fprintln(stdout, l)
+		}
+		return 0
+	}
 
 	if args[0] == "check" {
 		bad := false
@@ -95,7 +108,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		report("openbao secrets", n, err)
 		// each scope renders as its lane would install it on the node the commit makes (scratch.go): git's Quadlets,
 		// and its apps' run files from their pinned releases and drop-ins
-		made, done, serr := scratch(context.Background(), src, *auth)
+		made, done, serr := scratch(context.Background(), src, *fetched)
 		defer done()
 		if serr != nil {
 			report("node", 0, fmt.Errorf("the node the commit makes: %v", serr))

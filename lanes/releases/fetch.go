@@ -67,6 +67,32 @@ func (l Lane) download(ctx context.Context, rawURL, path, token string, accept .
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// get is the blob with digest, written to path, with its sha256: from the lane's store of fetched blobs when it has one
+// (Blobs), else downloaded from url. A blob in the store is proved by its digest as a downloaded one is.
+func (l Lane) get(ctx context.Context, digest, rawURL, path, token string, accept ...string) (string, error) {
+	if l.Blobs == "" {
+		return l.download(ctx, rawURL, path, token, accept...)
+	}
+	in, err := os.Open(filepath.Join(l.Blobs, "blobs", "sha256", strings.TrimPrefix(digest, "sha256:")))
+	if err != nil {
+		return "", fmt.Errorf("%s is not in the fetched releases (%s): %v", digest, l.Blobs, err)
+	}
+	defer in.Close()
+	f, err := os.Create(path)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(f, h), in); err != nil {
+		f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+}
+
 // redact drops a URL's query, where a signed blob URL carries its signature.
 func redact(raw string) string {
 	u, err := url.Parse(raw)
@@ -83,7 +109,7 @@ func (e errUnauthorized) Error() string { return "the registry asks for a login"
 
 // fetchTarball puts the tarball in got, proved by its digest.
 func (l Lane) fetchTarball(ctx context.Context, r Release, got string) error {
-	sum, err := l.download(ctx, r.Source, filepath.Join(got, "release.tar.gz"), "")
+	sum, err := l.get(ctx, r.Digest, r.Source, filepath.Join(got, "release.tar.gz"), "")
 	if err != nil {
 		return err
 	}
@@ -110,7 +136,7 @@ func (l Lane) fetchArtifact(ctx context.Context, r Release, got string) error {
 	mpath := filepath.Join(got, ".manifest")
 	accept := []string{"application/vnd.oci.image.manifest.v1+json"}
 	token := ""
-	sum, err := l.download(ctx, base+"/manifests/"+r.Digest, mpath, token, accept...)
+	sum, err := l.get(ctx, r.Digest, base+"/manifests/"+r.Digest, mpath, token, accept...)
 	if ch, ok := err.(errUnauthorized); ok {
 		if token, err = l.token(ctx, host, ch.challenge); err != nil {
 			return err
@@ -143,7 +169,7 @@ func (l Lane) fetchArtifact(ctx context.Context, r Release, got string) error {
 		if !safeTitle.MatchString(name) {
 			name = strings.TrimPrefix(layer.Digest, "sha256:")
 		}
-		sum, err := l.download(ctx, base+"/blobs/"+layer.Digest, filepath.Join(got, name), token)
+		sum, err := l.get(ctx, layer.Digest, base+"/blobs/"+layer.Digest, filepath.Join(got, name), token)
 		if err != nil {
 			return err
 		}

@@ -52,6 +52,7 @@ type Lane struct {
 	AuthFile string       // default /etc/dazoo/registry-auth.json: the registry login, used when it is on the node
 	HTTP     *http.Client // default: a client with a five-minute limit
 	Scheme   string       // the registry's scheme, default https (a test's registry may be plain http)
+	Blobs    string       // a store of fetched blobs (an OCI image layout) to read each blob from in place of the network
 }
 
 func (Lane) Name() string { return "releases" }
